@@ -1,0 +1,20 @@
+/papers/*
+.venv/
+datasets/*
+
+# generated features (rebuilt by 1.eda-image-datasets.ipynb)
+features/
+
+# Jupyter / JupyterLab runtime files
+.ipynb_checkpoints/
+.jupyter/
+.jupyter_ystore.db
+.virtual_documents/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS / editor temp files
+.DS_Store
+~$*
