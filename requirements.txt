@@ -1,5 +1,9 @@
 pandas
 matplotlib
 numpy
-torch 
+scipy
+scikit-learn
+torch
 torchvision
+tqdm
+ipywidgets
