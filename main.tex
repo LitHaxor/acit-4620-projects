@@ -50,7 +50,7 @@ Fine particulate matter is among the most harmful air pollutants, yet reference 
 \subsection{Brief Literature Review}
 Classical dehazing explains why photos carry this information: the dark channel prior~\cite{he2011} shows that haze lifts the darkest pixel values of a scene. Recent work (Table~\ref{tab:lit}) builds on such cues but leaves clear gaps. Kamble \textit{et al.}~\cite{kamble2025} feed frozen EfficientNet features of smartphone photos to a BiLSTM and add weather data, but use one camera view in one city. Han \textit{et al.}~\cite{han2025} train a contrastive network on fixed traffic cameras that needs as few as 50 labelled images per camera, but assumes a static background. Lee and Moses Manova~\cite{lee2025} show that near-infrared and red-edge drone bands separate haze from cloud, raising three-level accuracy from 95.1\% to 99.6\% on private data. Byler \textit{et al.}~\cite{byler2025} find that image models exceed 80\% accuracy at seen sites but reach at most 65\% at unseen ones. SkyFuseNet~\cite{abdelsalam2026} fuses a Swin transformer with station readings and reports $R^2=0.998$, but its image branch alone fails (RMSE 158.95), so its accuracy comes from the sensor inputs. The gaps are (i)~small single-site datasets, (ii)~little evaluation at unseen locations, and (iii)~fusion with pollutant readings that would not exist at deployment.
 
-\begin{table*}[t]
+\begin{table*}[htbp]
 \centering
 \caption{Recent IEEE Work on Image-Based \pmtwofive{} Estimation}
 \label{tab:lit}
@@ -91,6 +91,8 @@ We have already explored the data and extracted features, for two reasons: to ma
 \label{fig:heatmap}
 \end{figure}
 
+\newpage
+
 \section{Task 2: Literature Overview}
 
 \section{1\textsuperscript{st} Paper}
@@ -105,7 +107,7 @@ The framework has two stages. A CNN pre-trained on ImageNet turns each image int
 
 EfficientNet-B1 (7.79M parameters, 0.69 GFLOPs) beat ResNet-18 (11.69M, 1.81 GFLOPs) in both accuracy and cost, while the larger B2 and B3 were worse. Shuffling improved every model, HDR images gave slightly lower errors than non-HDR images, and weather inputs gave further gains (Table~\ref{tab:kamble}).
 
-\begin{table}[t]
+\begin{table}[htbp]
 \centering
 \caption{Key Results of Kamble \textit{et al.}~\cite{kamble2025}, EfficientNet-B1-BiLSTM (MAE in $\mu$g/m$^3$)}
 \label{tab:kamble}
