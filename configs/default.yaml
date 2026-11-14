@@ -1,0 +1,73 @@
+seed: 42
+outputs_dir: "outputs"
+
+data:
+  train_csv: "datasets/train/metadata.csv"
+  test_csv: "datasets/test/metadata.csv"
+  train_images_dir: "datasets/train/images"
+  test_images_dir: "datasets/test/images"
+  image_size: 224
+  aqi_scale: 100.0
+  batch_size: 32
+  num_workers: 4
+  n_splits: 5
+  group_mode: "station"          # "station" or "spatial_cluster"
+  spatial_cluster_km: 25.0
+  rotation_deg: 5.0
+  translate_frac: 0.02
+  scale_range: [0.98, 1.02]
+  horizontal_flip_prob: 0.5
+
+model:
+  name: "mdnet_t_reg"            # Step 2: median, ridge_haze, metadata_mlp; Step 3: resnet18_scratch, resnet18_pretrained, mobilenetv3_s_pretrained, mobilenetv3_s_md_neck, mdnet_t_reg, mdnet_t_cls; Step 4: pfrml_mobilenetv3_s, pfrml_resnet18, pfrml_mdnet_t, pfrml_e3b
+  head_type: "regression"        # "regression", "classification", or "multitask"
+  num_classes: 6
+  metadata_dim: 5
+  metadata_hidden: [64, 32]
+  metadata_dropout: 0.0
+  haze_patch_size: 15
+  haze_omega: 0.95
+
+loss:
+  cls_eps: 0.1
+  reg_loss: "mse"                # "mse" or "huber"
+  huber_delta: 0.5
+  beta: 0.5
+  use_class_weights: false
+  class_weight_gamma: 0.5
+  weight_reg_by_class: false
+
+train:
+  epochs: 30
+  warmup_epochs: 3
+  lr: 0.001
+  min_lr: 0.000001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  batch_size: 32
+  use_amp: false                 # fp32 by default
+  device: "auto"                 # "auto", "mps", "cuda", "cpu"
+  ridge_alphas: [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+
+pfrml:
+  backbone: "mdnet_t"
+  pretrained: false
+  tap_mode: "multistage"
+  e3b_single_tap: "md_neck"
+  dim: 224
+  num_classes: 6
+  dcm_fusion: "sum"
+  dcm_avg_pool_kernel: 1
+  transformer_layers: 2
+  transformer_heads: 4
+  transformer_mlp_ratio: 2.0
+  transformer_dropout: 0.1
+  use_attention_pooling: false
+  pooling_mode: "softmax"
+  use_physics_gate: false
+  physics_input_is_normalized: true
+  use_prototypes: true
+  proto_ema_decay: 0.9
+  proto_tau_init: 0.2
+  reg_hidden_dims: [256]
+  reg_dropout: 0.1

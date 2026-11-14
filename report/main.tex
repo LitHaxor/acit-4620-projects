@@ -1,0 +1,52 @@
+\documentclass[conference]{IEEEtran}
+% Use \documentclass[journal]{IEEEtran} for IEEE journal two-column style.
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\begin{document}
+
+\title{Image-Based Air Quality and $\text{PM}_{2.5}$ Estimation Using Multiscale Prototype Multitask Learning}
+
+\author{
+  \IEEEauthorblockN{First Author\IEEEauthorrefmark{1}, Second Author\IEEEauthorrefmark{1}}
+  \IEEEauthorblockA{\IEEEauthorrefmark{1}Department of Computer Science, Oslo Metropolitan University (OsloMet), Oslo, Norway\\
+  Email: \{first.author, second.author\}@oslomet.no}
+}
+
+\maketitle
+
+\begin{abstract}
+This report presents an image-based air quality and $\text{PM}_{2.5}$ estimation pipeline built upon multiscale dilated convolutional backbones and prototype-guided multitask learning. Replace this placeholder abstract with a concise summary of the problem, methodology, experimental setup, and key quantitative findings.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Air quality monitoring, $\text{PM}_{2.5}$ estimation, prototype learning, multitask learning, convolutional neural networks.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Ambient particulate matter ($\text{PM}_{2.5}$) poses significant public health risks, yet physical monitoring stations remain spatially sparse and expensive to deploy. Image-based air quality estimation offers a scalable alternative by capturing visual atmospheric cues such as contrast attenuation, saturation loss, and haze scattering~\cite{wangPrototypeFeatureRepresentationGuided2026,wangLightweightAirQuality2024}.
+
+\section{Related Work}
+Discuss prior work on image-based air quality classification, continuous $\text{PM}_{2.5}$ regression, lightweight multiscale architectures~\cite{wangLightweightAirQuality2024}, and prototype-guided multitask frameworks~\cite{wangPrototypeFeatureRepresentationGuided2026}.
+
+\section{Methodology}
+Describe the dataset cleaning, station-grouped and spatial-cluster cross-validation splits, model architecture, loss formulation, and ablation toggles.
+
+\section{Experiments and Results}
+Present quantitative comparisons, ablation studies, and qualitative visualizations. Figures placed in \texttt{figures/} can be included directly via \texttt{\textbackslash includegraphics}.
+
+\section{Conclusion}
+Summarize the main contributions, empirical findings, limitations, and directions for future work.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

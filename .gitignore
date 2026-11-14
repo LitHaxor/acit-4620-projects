@@ -1,4 +1,9 @@
-# Track only the Jupyter notebooks; ignore everything else.
-/*
-!/.gitignore
-!/*.ipynb
+outputs
+env
+datasets
+papers
+skills
+__pycache__
+.DS_Store
+.python-version
+reports/build

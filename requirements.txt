@@ -7,3 +7,8 @@ torch
 torchvision
 tqdm
 ipywidgets
+huggingface_hub
+pyarrow
+pymupdf
+pymupdf4llm
+rapidocr-onnxruntime

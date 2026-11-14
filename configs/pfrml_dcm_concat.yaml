@@ -1,0 +1,60 @@
+seed: 42
+outputs_dir: "outputs"
+
+data:
+  image_size: 224
+  aqi_scale: 100.0
+  batch_size: 32
+  num_workers: 4
+  n_splits: 5
+  group_mode: "station"
+  spatial_cluster_km: 25.0
+
+model:
+  name: "pfrml_mdnet_t"
+  head_type: "multitask"
+  num_classes: 6
+  haze_patch_size: 15
+  haze_omega: 0.95
+
+loss:
+  cls_eps: 0.1
+  reg_loss: "mse"
+  huber_delta: 0.5
+  beta: 0.5
+  use_class_weights: false
+  class_weight_gamma: 0.5
+  weight_reg_by_class: false
+
+train:
+  epochs: 30
+  warmup_epochs: 3
+  lr: 0.001
+  min_lr: 0.000001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  batch_size: 32
+  use_amp: false
+  device: "auto"
+
+pfrml:
+  backbone: "mdnet_t"
+  pretrained: false
+  tap_mode: "multistage"
+  e3b_single_tap: "md_neck"
+  dim: 224
+  num_classes: 6
+  dcm_fusion: "concat"
+  dcm_avg_pool_kernel: 1
+  transformer_layers: 2
+  transformer_heads: 4
+  transformer_mlp_ratio: 2.0
+  transformer_dropout: 0.1
+  use_attention_pooling: false
+  pooling_mode: "softmax"
+  use_physics_gate: false
+  physics_input_is_normalized: true
+  proto_ema_decay: 0.9
+  proto_tau_init: 0.2
+  reg_hidden_dims: [256]
+  reg_dropout: 0.1
