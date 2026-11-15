@@ -1,6 +1,6 @@
 """Dimension Consistency Module (DCM), Light Transformer, Prototype Heads & Backbone Interface.
 
-Implements the Step 4a PFRML spine (Paper 1: Wang et al., IEEE TGRS 2026)
+Implements the PFRML spine (Paper 1: Wang et al., IEEE TGRS 2026)
 adapted per `docs/SPEC.md` Sec. 3.2 & 3.3:
 - `DimensionConsistencyModule`: Projects 4 hierarchical feature maps
   `[C1, C2, C3, C4]` (strides `[4, 8, 16, 32]`) to `D=224` via `1x1` conv,
@@ -32,7 +32,7 @@ adapted per `docs/SPEC.md` Sec. 3.2 & 3.3:
      cross-entropy + EMA prototype updates.
   3. `use_prototypes=False` (R1 ablation, PFRML Sec. III-C3 Fig. 7 `"w/o prototype"`):
      omits prototypes and feeds `chi_i` (`D = 224`) directly to `h(chi_i)`.
-  4. Optional `extra_dim` (e.g., 32-D `MetadataMLP` embedding `m` in Step 5
+  4. Optional `extra_dim` (e.g., 32-D `MetadataMLP` embedding `m` in multimodal
      multimodal fusion, yielding `[chi_i; (c_tilde_i); m]`).
 - `BackboneTapWrapper`, `PFRMLHead`, and `PFRMLModel`: Backbone-agnostic
   interface supporting `mobilenetv3_s`, `resnet18`, `mdnet_t`, and `e3b`.
@@ -403,7 +403,7 @@ class PrototypeGuidedRegressionHead(nn.Module):
       (trained by cross-entropy `L_cls` and EMA prototype updates).
     - **PFRML Sec. III-C3, Fig. 7 (`use_prototypes=False`, R1 `"w/o prototype"`):**
       Omits prototypes entirely (`cls_loss = 0`) and feeds `chi_i` (`D = 224`) to `h(chi_i)`.
-    - **Step 5 Multimodal Fusion (`extra_dim > 0`):**
+    - **Multimodal Fusion (`extra_dim > 0`):**
       Appends metadata embedding `m` (`32`-D) to form `[chi_i; (c_tilde_i); m]`.
     """
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Resumable Step 4 PFRML experiment-ladder queue runner (`scripts/run_queue_step4.py`).
+"""Resumable PFRML ablation-ladder queue runner (`scripts/experiments/queue_pfrml_ablations.py`).
 
-Design mirrors `scripts/run_queue.py`:
+Design mirrors `scripts/experiments/queue_baselines.py`:
 - One isolated subprocess (`train.py --resume`) per `(experiment_id, fold)`.
 - Skips any `(experiment_id, group_mode, fold)` already present in
-  `outputs/results/step4_results.csv` (or `outputs/smoke/step4_results.csv` in `--smoke`).
+  `outputs/results/pfrml_ablation_cv_results.csv` (or `outputs/smoke/pfrml_ablation_cv_results.csv` in `--smoke`).
 - Crashes are logged and the queue continues.
-- Logs exclusively to `outputs/logs/queue_step4.log` (or `outputs/smoke/logs/queue_step4.log`).
+- Logs exclusively to `outputs/logs/queue_pfrml_ablations.log` (or `outputs/smoke/logs/queue_pfrml_ablations.log`).
 - Atomic CSV appends via `evaluate.append_result_row` and `cv_mean`/`cv_std` summary rows.
 - `--pilot`: runs only `R2` (`E4_mobilenetv3_s_baseline`) fold 0 and prints its validation MAE.
 - `--smoke`: runs 1 epoch on 64 samples across 2 folds under `outputs/smoke/`.
@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -51,8 +51,8 @@ BATCHES_PER_FOLD_BS32 = 205  # ~6541 train images / 32
 
 
 @dataclass(frozen=True)
-class Step4RunSpec:
-    """Specification for a single rung / run in the Step 4 queue."""
+class PFRMLAblationRunSpec:
+    """Specification for a single rung / run in the PFRML ablation queue."""
 
     rung: str
     experiment_id: str
@@ -64,50 +64,50 @@ class Step4RunSpec:
     is_extra_b: bool = False
 
 
-def build_step4_specs(smoke: bool = False) -> List[Step4RunSpec]:
-    """Return Step 4 queue configurations in config-major order (`SPEC.md` Sec. 5)."""
+def build_pfrml_ablation_specs(smoke: bool = False) -> List[PFRMLAblationRunSpec]:
+    """Return PFRML ablation queue configurations in config-major order (`SPEC.md` Sec. 5)."""
 
     def ep(n: int) -> int:
         return 1 if smoke else n
 
     return [
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2",
             experiment_id="E4_mobilenetv3_s_baseline",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_baseline.yaml",
+            config="configs/pfrml_prototype_multitask.yaml",
             group_mode="station",
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R1",
             experiment_id="E4_mobilenetv3_s_r1_no_prototypes",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_r1_no_prototypes.yaml",
+            config="configs/pfrml_regression_only.yaml",
             group_mode="station",
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2+all",
             experiment_id="E4_mobilenetv3_s_full",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_full.yaml",
+            config="configs/pfrml_all_toggles.yaml",
             group_mode="station",
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2+T1",
             experiment_id="E4_mobilenetv3_s_attn_pool",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_attn_pool.yaml",
+            config="configs/pfrml_attention_pooling.yaml",
             group_mode="station",
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2+T2",
             experiment_id="E4_mobilenetv3_s_physics_gate",
             model="pfrml_mobilenetv3_s",
@@ -116,7 +116,7 @@ def build_step4_specs(smoke: bool = False) -> List[Step4RunSpec]:
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2+T3",
             experiment_id="E4_mobilenetv3_s_class_weights",
             model="pfrml_mobilenetv3_s",
@@ -125,7 +125,7 @@ def build_step4_specs(smoke: bool = False) -> List[Step4RunSpec]:
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="R2+T4",
             experiment_id="E4_mobilenetv3_s_dcm_concat",
             model="pfrml_mobilenetv3_s",
@@ -134,7 +134,7 @@ def build_step4_specs(smoke: bool = False) -> List[Step4RunSpec]:
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="Extra run A",
             experiment_id="E2_mobilenetv3_s_pretrained_spatial",
             model="mobilenetv3_s_pretrained",
@@ -143,11 +143,11 @@ def build_step4_specs(smoke: bool = False) -> List[Step4RunSpec]:
             lr=1e-3,
             epochs=ep(30),
         ),
-        Step4RunSpec(
+        PFRMLAblationRunSpec(
             rung="Extra run B",
             experiment_id="E4_mdnet_t_baseline_ep60",
             model="pfrml_mdnet_t",
-            config="configs/pfrml_baseline.yaml",
+            config="configs/pfrml_prototype_multitask.yaml",
             group_mode="station",
             lr=1e-3,
             epochs=ep(60),
@@ -233,16 +233,16 @@ def extract_epochs_from_row(row: Dict[str, str], default_epochs: int) -> int:
 
 
 def estimate_spec_sec_per_epoch(
-    spec: Step4RunSpec,
-    step4_rows: Sequence[Dict[str, str]],
-    step3_rows: Sequence[Dict[str, str]],
+    spec: PFRMLAblationRunSpec,
+    pfrml_rows: Sequence[Dict[str, str]],
+    image_rows: Sequence[Dict[str, str]],
     outputs_dir: Path,
     smoke: bool = False,
 ) -> float:
     """Estimate `sec/epoch` for `spec` from recorded CSV rows, curve CSVs, or a short batch timing."""
-    # 1. Any completed fold of this exact experiment_id in step4_rows
+    # 1. Any completed fold of this exact experiment_id in pfrml_rows
     exact_times: List[float] = []
-    for r in step4_rows:
+    for r in pfrml_rows:
         if r.get("experiment_id") == spec.experiment_id and r.get("fold") not in {"cv_mean", "cv_std"}:
             t = extract_sec_per_epoch_from_row(r)
             if t is not None:
@@ -262,10 +262,10 @@ def estimate_spec_sec_per_epoch(
             if c_times:
                 return sum(c_times) / len(c_times)
 
-    # 3. Same model in step4_rows
+    # 3. Same model in pfrml_rows
     same_model_times = [
         t
-        for r in step4_rows
+        for r in pfrml_rows
         if r.get("model") == spec.model
         and r.get("fold") not in {"cv_mean", "cv_std"}
         and (t := extract_sec_per_epoch_from_row(r)) is not None
@@ -273,11 +273,11 @@ def estimate_spec_sec_per_epoch(
     if same_model_times:
         return sum(same_model_times) / len(same_model_times)
 
-    # 4. For Extra run B (`pfrml_mdnet_t`) or `mobilenetv3_s_pretrained`, check Step 3 CSV rows
+    # 4. For Extra run B (`pfrml_mdnet_t`) or `mobilenetv3_s_pretrained`, check image-baseline CSV rows
     if spec.model == "mobilenetv3_s_pretrained":
         s3_times = [
             t
-            for r in step3_rows
+            for r in image_rows
             if r.get("model") == "mobilenetv3_s_pretrained"
             and (t := extract_sec_per_epoch_from_row(r)) is not None
         ]
@@ -288,19 +288,19 @@ def estimate_spec_sec_per_epoch(
         # Compute ratio from pfrml_mobilenetv3_s vs mobilenetv3_s_pretrained or add PFRML head overhead to mdnet_t_reg
         mdnet_s3_times = [
             t
-            for r in step3_rows
+            for r in image_rows
             if r.get("model") == "mdnet_t_reg"
             and (t := extract_sec_per_epoch_from_row(r)) is not None
         ]
         mob_s3_times = [
             t
-            for r in step3_rows
+            for r in image_rows
             if r.get("model") == "mobilenetv3_s_pretrained"
             and (t := extract_sec_per_epoch_from_row(r)) is not None
         ]
         pfrml_mob_times = [
             t
-            for r in step4_rows
+            for r in pfrml_rows
             if r.get("model") == "pfrml_mobilenetv3_s"
             and r.get("fold") not in {"cv_mean", "cv_std"}
             and (t := extract_sec_per_epoch_from_row(r)) is not None
@@ -387,10 +387,10 @@ def _completed_epochs_from_checkpoint(ckpt_path: Path, expected_epochs: int) -> 
 
 
 def project_total_queue_hours_before_extra_b(
-    all_specs: Sequence[Step4RunSpec],
+    all_specs: Sequence[PFRMLAblationRunSpec],
     cv_folds: Sequence[int],
-    step4_rows: Sequence[Dict[str, str]],
-    step3_rows: Sequence[Dict[str, str]],
+    pfrml_rows: Sequence[Dict[str, str]],
+    image_rows: Sequence[Dict[str, str]],
     indexed_rows: Dict[Tuple[str, str, str], Dict[str, str]],
     outputs_dir: Path,
     smoke: bool = False,
@@ -403,8 +403,8 @@ def project_total_queue_hours_before_extra_b(
     for spec in all_specs:
         sec_per_ep = estimate_spec_sec_per_epoch(
             spec=spec,
-            step4_rows=step4_rows,
-            step3_rows=step3_rows,
+            pfrml_rows=pfrml_rows,
+            image_rows=image_rows,
             outputs_dir=outputs_dir,
             smoke=smoke,
         )
@@ -455,7 +455,7 @@ def project_total_queue_hours_before_extra_b(
 
 def _run_train_subprocess(
     *,
-    spec: Step4RunSpec,
+    spec: PFRMLAblationRunSpec,
     fold: int,
     results_csv: Path,
     outputs_dir: Path,
@@ -520,7 +520,7 @@ def _run_train_subprocess(
 
 
 def _maybe_append_cv_summary(
-    spec: Step4RunSpec,
+    spec: PFRMLAblationRunSpec,
     cv_folds: Sequence[int],
     results_csv: Path,
     log_f: TextIO,
@@ -599,7 +599,7 @@ def _maybe_append_cv_summary(
     )
 
 
-def run_queue_step4(
+def run_pfrml_ablation_queue(
     *,
     smoke: bool = False,
     pilot: bool = False,
@@ -611,22 +611,22 @@ def run_queue_step4(
         outputs_dir = PROJECT_ROOT / ("outputs/smoke" if smoke else "outputs")
     if results_csv is None:
         results_csv = (
-            outputs_dir / "step4_results.csv"
+            outputs_dir / "pfrml_ablation_cv_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/step4_results.csv"
+            else PROJECT_ROOT / "outputs/results/pfrml_ablation_cv_results.csv"
         )
-    log_path = outputs_dir / "logs" / "queue_step4.log"
+    log_path = outputs_dir / "logs" / "queue_pfrml_ablations.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cv_folds = [0, 1] if smoke else [0, 1, 2, 3, 4]
-    specs = build_step4_specs(smoke=smoke)
+    specs = build_pfrml_ablation_specs(smoke=smoke)
 
-    step3_csv = PROJECT_ROOT / "outputs/results/step3_results.csv"
-    step3_rows = load_results_rows(step3_csv)
+    image_csv = PROJECT_ROOT / "outputs/results/image_models_cv_results.csv"
+    image_rows = load_results_rows(image_csv)
 
     with log_path.open("a", encoding="utf-8") as log_f:
         log_line(
             log_f,
-            f"=== STEP 4 QUEUE START (smoke={smoke}, pilot={pilot}, "
+            f"=== PFRML ABLATION QUEUE START (smoke={smoke}, pilot={pilot}, "
             f"results_csv={results_csv}, outputs_dir={outputs_dir}) ===",
         )
 
@@ -655,14 +655,14 @@ def run_queue_step4(
             msg = f"PILOT R2 ({r2_spec.experiment_id}) fold 0 validation MAE: {mae_str}"
             log_line(log_f, msg)
             print(msg, flush=True)
-            log_line(log_f, "=== STEP 4 PILOT COMPLETE ===")
+            log_line(log_f, "=== PFRML ABLATION PILOT COMPLETE ===")
             return 0
 
         for spec in specs:
             if spec.is_extra_b:
                 # Time guard before Extra run B
-                step4_rows = load_results_rows(results_csv)
-                indexed = index_val_rows(step4_rows)
+                pfrml_rows = load_results_rows(results_csv)
+                indexed = index_val_rows(pfrml_rows)
                 rem_b_folds = [
                     k
                     for k in cv_folds
@@ -672,8 +672,8 @@ def run_queue_step4(
                     total_proj_h, extra_b_h, breakdown = project_total_queue_hours_before_extra_b(
                         all_specs=specs,
                         cv_folds=cv_folds,
-                        step4_rows=step4_rows,
-                        step3_rows=step3_rows,
+                        pfrml_rows=pfrml_rows,
+                        image_rows=image_rows,
                         indexed_rows=indexed,
                         outputs_dir=outputs_dir,
                         smoke=smoke,
@@ -687,7 +687,7 @@ def run_queue_step4(
                     if total_proj_h > float(max_hours):
                         stop_path = outputs_dir / "QUEUE_STOPPED.txt"
                         lines = [
-                            f"Step 4 queue time guard triggered at {_ts()}",
+                            f"PFRML ablation queue time guard triggered at {_ts()}",
                             f"Skipped run: {spec.rung} ({spec.experiment_id}, model={spec.model}, "
                             f"config={spec.config}, epochs={spec.epochs}, folds={rem_b_folds})",
                             f"Reason: Total projected queue time ({total_proj_h:.2f} h, including "
@@ -738,13 +738,13 @@ def run_queue_step4(
 
             _maybe_append_cv_summary(spec, cv_folds, results_csv, log_f)
 
-        log_line(log_f, "=== STEP 4 QUEUE COMPLETE ===")
+        log_line(log_f, "=== PFRML ABLATION QUEUE COMPLETE ===")
     return 0
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Resumable Step 4 PFRML experiment-ladder training queue."
+        description="Resumable PFRML ablation-ladder training queue."
     )
     parser.add_argument(
         "--smoke",
@@ -762,12 +762,44 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_MAX_HOURS,
         help="Skip Extra run B if total projected queue hours exceed this limit (default: 14.0).",
     )
+    parser.add_argument(
+        "--project-only",
+        action="store_true",
+        help="Print projected runtime breakdown and queue plan without training.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    return run_queue_step4(
+    if args.project_only:
+        outputs_dir = PROJECT_ROOT / "outputs"
+        results_csv = outputs_dir / "results" / "pfrml_ablation_cv_results.csv"
+        image_csv = outputs_dir / "results" / "image_models_cv_results.csv"
+        pfrml_rows = load_results_rows(results_csv)
+        image_rows = load_results_rows(image_csv)
+        specs = build_pfrml_ablation_specs(smoke=False)
+        total_h, extra_b_h, breakdown = project_total_queue_hours_before_extra_b(
+            all_specs=specs,
+            cv_folds=[0, 1, 2, 3, 4],
+            pfrml_rows=pfrml_rows,
+            image_rows=image_rows,
+            indexed_rows=index_val_rows(pfrml_rows),
+            outputs_dir=outputs_dir,
+            smoke=False,
+        )
+        for item in breakdown:
+            print(
+                f"{item['rung']}: {item['experiment_id']} ({item['model']}, ep={item['epochs']}) | "
+                f"{item['sec_per_ep']:.2f} s/ep | done={item['done_folds']}, "
+                f"remaining={item['remaining_folds']} | est={item['projected_hours']:.2f} h"
+            )
+        print(
+            f"TOTAL PROJECTED HOURS: {total_h:.2f} h "
+            f"(Extra run B = {extra_b_h:.2f} h, guard = {args.max_hours:.2f} h)"
+        )
+        return 0
+    return run_pfrml_ablation_queue(
         smoke=bool(args.smoke),
         pilot=bool(args.pilot),
         max_hours=float(args.max_hours),

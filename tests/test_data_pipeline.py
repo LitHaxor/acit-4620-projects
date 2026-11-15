@@ -1,4 +1,4 @@
-"""Pytest suite for Step 1: Data cleaning, station/spatial splits, transforms, and Dataset."""
+"""Pytest suite for data cleaning, station/spatial splits, transforms, and Dataset."""
 
 import numpy as np
 import torch

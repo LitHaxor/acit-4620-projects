@@ -1,4 +1,4 @@
-"""CPU-only unit tests for Step 4a/4b-1/4b-2 PFRML head, backbone interfaces, toggles, R1, and train/eval wiring."""
+"""CPU-only unit tests for PFRML head, backbone interfaces, toggles, R1, and train/eval wiring."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 
 from evaluate import PFRML_MODEL_SPECS, default_pfrml_experiment_id
-from scripts.run_queue_step4 import build_step4_specs
-from scripts.summarize_step4 import WILCOXON_NOTE, generate_step4_summary
+from scripts.analysis.summarize_last_epoch import discover_curves
+from scripts.experiments.queue_pfrml_ablations import build_pfrml_ablation_specs
 from src.config import load_config
 from src.losses import HybridMultitaskLoss, RegressionLoss, compute_class_weights
 from src.models.dcm import (
@@ -416,7 +416,7 @@ def test_eval_forward_leaves_prototypes_unchanged_in_train_eval_loop() -> None:
 
 def test_class_weights_computed_from_training_bins_only() -> None:
     """Verify fold loss computes class weights strictly from fold training bins."""
-    cfg = load_config("configs/pfrml_full.yaml")
+    cfg = load_config("configs/pfrml_all_toggles.yaml")
     assert cfg.loss.use_class_weights is True
 
     # Fold training bins have skewed distribution; validation bins have a very different one
@@ -460,7 +460,7 @@ def test_pfrml_models_build_with_right_pretrained_flag(
     expected_pretrained: bool,
 ) -> None:
     """Verify each registered pfrml_* model builds with the required backbone and pretrained flag."""
-    cfg = load_config("configs/pfrml_full.yaml")
+    cfg = load_config("configs/pfrml_all_toggles.yaml")
     assert PFRML_MODEL_SPECS[model_name] == (expected_backbone, expected_pretrained)
 
     model, head_type = build_image_model(model_name, cfg)
@@ -471,14 +471,14 @@ def test_pfrml_models_build_with_right_pretrained_flag(
     assert model.backbone.tap_mode == "multistage"
     assert model.head.transformer.pooling.enabled is True
     assert model.head.physics_gate.enabled is True
-    assert default_pfrml_experiment_id(model_name, "configs/pfrml_full.yaml") == (
+    assert default_pfrml_experiment_id(model_name, "configs/pfrml_all_toggles.yaml") == (
         f"E4_{expected_backbone}_full"
     )
 
 
 def test_r1_use_prototypes_false_no_buffers_and_regression_only_loss() -> None:
     """Verify R1 (`use_prototypes: false`) uses no prototype buffers and regression-only loss."""
-    cfg = load_config("configs/pfrml_r1_no_prototypes.yaml")
+    cfg = load_config("configs/pfrml_regression_only.yaml")
     assert cfg.pfrml.use_prototypes is False
 
     head = PFRMLHead(in_channels=(16, 24, 48, 576), use_prototypes=False)
@@ -522,9 +522,9 @@ def test_r1_use_prototypes_false_no_buffers_and_regression_only_loss() -> None:
             assert p.grad is not None, f"Missing grad in R1 head for {name}"
 
 
-def test_step4_queue_specs_and_summarize_empty_csv(tmp_path: Path) -> None:
-    """Verify config-major queue order and clear empty-CSV message in summarize_step4.py."""
-    specs = build_step4_specs(smoke=False)
+def test_pfrml_queue_specs_and_empty_curve_discovery(tmp_path: Path) -> None:
+    """Verify config-major PFRML ablation queue order and empty curve discovery."""
+    specs = build_pfrml_ablation_specs(smoke=False)
     assert [s.rung for s in specs] == [
         "R2",
         "R1",
@@ -540,9 +540,6 @@ def test_step4_queue_specs_and_summarize_empty_csv(tmp_path: Path) -> None:
     assert specs[-1].epochs == 60
     assert specs[-2].group_mode == "spatial_cluster"
 
-    empty_csv = tmp_path / "empty.csv"
-    empty_csv.write_text("", encoding="utf-8")
-    out_md = tmp_path / "summary.md"
-    msg = generate_step4_summary(step4_csv=empty_csv, output_md=out_md)
-    assert "No Step 4 result rows found" in msg
-    assert WILCOXON_NOTE == "n=5: minimum possible two-sided p = 0.0625"
+    empty_curves = tmp_path / "empty_curves"
+    empty_curves.mkdir()
+    assert discover_curves(empty_curves) == {}

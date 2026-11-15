@@ -14,13 +14,13 @@ Features:
 
 Usage:
     # Convert all papers in default directory (papers/ -> papers/markdown/)
-    python convert_papers_to_markdown.py
+    python scripts/data/convert_papers_to_markdown.py
 
     # Custom directories
-    python convert_papers_to_markdown.py --papers-dir papers --output-dir papers/markdown
+    python scripts/data/convert_papers_to_markdown.py --papers-dir papers --output-dir papers/markdown
 
     # Convert a single paper
-    python convert_papers_to_markdown.py --file papers/Beyond_here_and_now.pdf
+    python scripts/data/convert_papers_to_markdown.py --file papers/Beyond_here_and_now.pdf
 """
 
 import argparse

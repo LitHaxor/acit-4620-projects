@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build authoritative report numbers markdown (`scripts/build_report_numbers.py`).
+"""Build authoritative report numbers markdown (`scripts/analysis/build_report_numbers.py`).
 
 CPU-only, read-only script that generates `outputs/results/REPORT_NUMBERS.md`
-STRICTLY from CSVs, per-epoch curve files (`outputs/curves/*.csv`), and saved
-prediction files (`outputs/predictions/*.csv`, `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`),
-with zero hand-typed metric numbers.
+(or `<results_dir>/REPORT_NUMBERS.md` with `--results-dir`) STRICTLY from CSVs,
+per-epoch curve files (`curves/*.csv`), and saved prediction files (`predictions/*.csv`
+and E1 `preds.npz`), with zero hand-typed metric numbers.
 
 Sections:
 1. Provenance: git commit hash (and whether uncommitted changes exist), date, seed 42, hardware string.
@@ -14,7 +14,7 @@ Sections:
 5. Fusion, spatial CV: E1 spatial, E2 spatial, all E5 fusion runs and their _meta_off rows, per fold.
 6. Final test results (full and >25 km) and the paired bootstrap tables.
 7. Failed or unstable runs: E4_mdnet_t_baseline_ep60, E5_mdnet_t_pfrml_lr2e-4_f0, E4_mobilenetv3_s_dcm_concat, each with its last-epoch MAE and a pointer to collapse.md.
-8. A "Do not quote" list: every best-epoch column, step4_summary.md best-epoch tables, and any experiment id that has no curve file (or <5 folds).
+8. A "Do not quote" list: every best-epoch column, superseded best-epoch summary tables, and any experiment id that has no curve file (or <5 folds).
 """
 
 from __future__ import annotations
@@ -34,21 +34,23 @@ import numpy as np
 import pandas as pd
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.compare_final import (  # noqa: E402
+from scripts.analysis.compare_final_models import (  # noqa: E402
     METRIC_SPECS,
     _append_paired_bootstrap_table,
+    _display_path,
     _get_test_gt25km_mask_and_ids,
     _load_csv_rows,
     _load_predictions_df,
     _order_model_names,
     _parse_float,
     _try_load_e1_metadata_mlp,
+    resolve_results_layout,
 )
-from scripts.summarize_last_epoch_v2 import (  # noqa: E402
+from scripts.analysis.summarize_last_epoch import (  # noqa: E402
     compute_paired_mae_diff,
     discover_curves,
     read_last_epoch_row,
@@ -194,25 +196,46 @@ def _index_csv_by_exp_mode_fold(
 
 def build_report_numbers(
     *,
-    outputs_dir: Path,
-    output_md: Path,
+    outputs_dir: Optional[Path] = None,
+    results_dir: Optional[Path] = None,
+    output_md: Optional[Path] = None,
     n_boot: int = 1000,
     seed: int = 42,
 ) -> str:
-    curves_dir = outputs_dir / "curves"
-    results_dir = outputs_dir / "results"
-    predictions_dir = outputs_dir / "predictions"
+    base_dir = Path(results_dir) if results_dir is not None else (
+        Path(outputs_dir) if outputs_dir is not None else PROJECT_ROOT / "outputs"
+    )
+    layout = resolve_results_layout(base_dir)
+    is_flat: bool = bool(layout["is_flat"])
+    csv_dir: Path = layout["csv_dir"]
+    curves_dir: Path = layout["curves_dir"]
+    predictions_dir: Path = layout["predictions_dir"]
+    e1_npz_path: Path = layout["e1_npz"]
+    collapse_md: Path = layout["collapse_md"]
+    if output_md is None:
+        output_md = layout["report_numbers_md"]
 
-    step2_csv = results_dir / "step2_results.csv"
-    step3_csv = results_dir / "step3_results.csv"
-    step4_csv = results_dir / "step4_results.csv"
-    step5_csv = results_dir / "step5_results.csv"
-    final_csv = results_dir / "final_results.csv"
+    baselines_csv: Path = layout["baselines_csv"]
+    image_csv: Path = layout["image_csv"]
+    pfrml_csv: Path = layout["pfrml_csv"]
+    fusion_csv: Path = layout["fusion_csv"]
+    final_csv: Path = layout["final_csv"]
 
-    s2_rows = _load_csv_rows(step2_csv)
-    s3_rows = _load_csv_rows(step3_csv)
-    s4_rows = _load_csv_rows(step4_csv)
-    s5_rows = _load_csv_rows(step5_csv)
+    csv_disp = _display_path(csv_dir)
+    curves_disp = _display_path(curves_dir)
+    preds_disp = _display_path(predictions_dir)
+    e1_npz_disp = _display_path(e1_npz_path)
+    collapse_disp = _display_path(collapse_md)
+    collapse_link = (
+        f"[{collapse_disp}](collapse.md)"
+        if is_flat
+        else f"[{collapse_disp}](file://{collapse_md.resolve()})"
+    )
+
+    s2_rows = _load_csv_rows(baselines_csv)
+    s3_rows = _load_csv_rows(image_csv)
+    s4_rows = _load_csv_rows(pfrml_csv)
+    s5_rows = _load_csv_rows(fusion_csv)
     fin_rows = _load_csv_rows(final_csv)
 
     s2_idx = _index_csv_by_exp_mode_fold(s2_rows)
@@ -253,13 +276,13 @@ def build_report_numbers(
                 pred_dfs[p.stem] = df
     ref_pred_df: Optional[pd.DataFrame] = None
     for df in pred_dfs.values():
-        if len(df) == len( df ) and (ref_pred_df is None or len(df) > len(ref_pred_df)):
+        if ref_pred_df is None or len(df) > len(ref_pred_df):
             ref_pred_df = df
 
-    gt25_mask, gt25_ids, clean_test_df = _get_test_gt25km_mask_and_ids()
+    gt25_mask, gt25_ids, clean_test_df = _get_test_gt25km_mask_and_ids(results_dir=base_dir)
     e1_conv_rows, e1_pred_df, _ = _try_load_e1_metadata_mlp(
-        outputs_dir=outputs_dir,
-        step2_csv=step2_csv,
+        outputs_dir=base_dir,
+        baselines_csv=baselines_csv,
         reference_pred_df=ref_pred_df,
         gt25_mask=gt25_mask,
         gt25_ids=gt25_ids,
@@ -281,7 +304,7 @@ def build_report_numbers(
     lines: List[str] = [
         "# Authoritative Report Numbers (`REPORT_NUMBERS.md`)",
         "",
-        "> Generated strictly from CSVs (`outputs/results/*.csv`), per-epoch curve files (`outputs/curves/*.csv`), and saved prediction files (`outputs/predictions/*.csv`, `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`) by `scripts/build_report_numbers.py`.",
+        f"> Generated strictly from CSVs (`{csv_disp}/*.csv`), per-epoch curve files (`{curves_disp}/*.csv`), and saved prediction files (`{preds_disp}/*.csv`, `{e1_npz_disp}`) by `scripts/analysis/build_report_numbers.py`.",
         "",
         "## 1. Provenance",
         "",
@@ -295,7 +318,7 @@ def build_report_numbers(
         "",
         "## 2. Baselines (`E0_median`, `E0_ridge`, `E1_metadata_mlp`)",
         "",
-        "Source: `outputs/results/step2_results.csv` and `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`.",
+        f"Source: `{csv_disp}/baselines_cv_results.csv` and `{e1_npz_disp}`.",
         "",
         "### 2a. Summary Table (`station` CV, `spatial_cluster` CV, Full `test`, and `test_gt25km` `>25 km`)",
         "",
@@ -392,7 +415,7 @@ def build_report_numbers(
             "",
             "## 3. Image-Only Models — 5-Fold `station` CV (LAST-Epoch Reporting)",
             "",
-            f"Source: Last-epoch rows of `outputs/curves/{{experiment_id}}_station_fold{{0..4}}.csv`. Skill is defined relative to `E0_median` (`station` CV `MAE = {e0_station_mean_mae:.2f}`) as $\\text{{Skill}} = 1 - \\text{{MAE}} / \\text{{MAE}}_{{\\text{{median}}}}$.",
+            f"Source: Last-epoch rows of `{curves_disp}/{{experiment_id}}_station_fold{{0..4}}.csv`. Skill is defined relative to `E0_median` (`station` CV `MAE = {e0_station_mean_mae:.2f}`) as $\\text{{Skill}} = 1 - \\text{{MAE}} / \\text{{MAE}}_{{\\text{{median}}}}$.",
             "",
             "### 3a. Per-Fold Last-Epoch MAE & Skill vs `E0_median`",
             "",
@@ -444,7 +467,7 @@ def build_report_numbers(
             "",
             "## 4. PFRML Ablation Ladder — 5-Fold `station` CV (All `E4` Configs + `E5_mobilenetv3_s_reg_chi`, LAST-Epoch)",
             "",
-            "Source: Last-epoch rows of `outputs/curves/{experiment_id}_station_fold{0..4}.csv`. Paired differences report `mean diff +- SE` (`SE = SD / sqrt(5)`, `candidate - reference`, negative = candidate lowers MAE) and `folds won / 5`.",
+            f"Source: Last-epoch rows of `{curves_disp}/{{experiment_id}}_station_fold{{0..4}}.csv`. Paired differences report `mean diff +- SE` (`SE = SD / sqrt(5)`, `candidate - reference`, negative = candidate lowers MAE) and `folds won / 5`.",
             "",
             "### 4a. Per-Fold Last-Epoch MAE & Paired Differences vs `R1`, `E2`, and `R2`",
             "",
@@ -499,7 +522,7 @@ def build_report_numbers(
         ("E2_mobilenetv3_s_pretrained_spatial", "spatial_cluster"), {}
     )
 
-    # Discover all spatial_cluster experiments in step5_results.csv in order of appearance
+    # Discover all spatial_cluster experiments in fusion_cv_results.csv in order of appearance
     fusion_exp_ids: List[str] = []
     for r in s5_rows:
         if r.get("group_mode") == "spatial_cluster":
@@ -514,7 +537,7 @@ def build_report_numbers(
             "",
             "## 5. Multimodal Fusion — 5-Fold `spatial_cluster` CV (`25 km` Cluster Separation, LAST-Epoch)",
             "",
-            "Source: `outputs/results/step2_results.csv` (`E0_median`, `E1_metadata_mlp`), `outputs/curves/E2_mobilenetv3_s_pretrained_spatial_spatial_cluster_fold{0..4}.csv`, and `outputs/results/step5_results.csv` (all `E5_fusion_*` runs and their `_meta_off` rows, evaluated at the LAST epoch).",
+            f"Source: `{csv_disp}/baselines_cv_results.csv` (`E0_median`, `E1_metadata_mlp`), `{curves_disp}/E2_mobilenetv3_s_pretrained_spatial_spatial_cluster_fold{{0..4}}.csv`, and `{csv_disp}/fusion_cv_results.csv` (all `E5_fusion_*` runs and their `_meta_off` rows, evaluated at the LAST epoch).",
             "",
             "### 5a. Per-Fold Last-Epoch MAE & Paired Differences vs `E1_metadata_mlp` (spatial) and `E2_mobilenetv3_s_pretrained_spatial`",
             "",
@@ -587,7 +610,7 @@ def build_report_numbers(
             "",
             "## 6. Final One-Shot Test Results (`test` and `test_gt25km` `>25 km`)",
             "",
-            f"Source: `outputs/results/final_results.csv`, `outputs/predictions/*.csv`, `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`, and `outputs/results/step2_results.csv`. Station-level cluster bootstrap uses `{n_boot}` resamples with `seed={seed}`.",
+            f"Source: `{csv_disp}/final_test_results.csv`, `{preds_disp}/*.csv`, `{e1_npz_disp}`, and `{csv_disp}/baselines_cv_results.csv`. Station-level cluster bootstrap uses `{n_boot}` resamples with `seed={seed}`.",
             "",
             "### 6a. All Final Models — 10 Metrics & 95% Station-Bootstrap MAE CI",
             "",
@@ -667,7 +690,7 @@ def build_report_numbers(
             "",
             "## 7. Failed or Unstable Runs",
             "",
-            "Detailed per-epoch loss trajectories and root-cause analysis are documented in [`outputs/diagnostics/collapse.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/diagnostics/collapse.md).",
+            f"Detailed per-epoch loss trajectories and root-cause analysis are documented in {collapse_link}.",
             "",
             "| Experiment | Mode | Folds | Last-Ep MAE | Last-Ep R2 | Ep 1 `train_loss` (Mean) | Last Ep `train_loss` (Mean) | Per-Fold Last-Ep MAE | Diagnostic Reference & Verdict |",
             "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
@@ -705,7 +728,7 @@ def build_report_numbers(
         lines.append(
             f"| `{exp_id}` | `{g_mode}` | {n_f}/5 | {mae_cell} | {r2_cell} | "
             f"{m_tr1:.4f} | {m_trl:.4f} | {', '.join(per_fold_strs)} | "
-            f"{diagnosis_text} See [`outputs/diagnostics/collapse.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/diagnostics/collapse.md). |"
+            f"{diagnosis_text} See {collapse_link}. |"
         )
 
     # Section 8: "Do not quote" list
@@ -716,14 +739,14 @@ def build_report_numbers(
             "",
             "## 8. \"Do Not Quote\" List (Superseded Best-Epoch Numbers, Missing-Curve IDs & Single-Fold Screens)",
             "",
-            "1. **Every Best-Epoch Column / Note (`outputs/results/step3_results.csv`, `outputs/results/step4_results.csv`, and `best_ep_mae` in `outputs/results/step5_results.csv`):**",
-            "   - All Step 3 and Step 4 CSV rows in `step3_results.csv` and `step4_results.csv` recorded the minimum-`val_loss` checkpoint (`best_ep`) rather than the final epoch (`last_ep`), and `step5_results.csv` records `best_ep_mae=...` inside its `notes` column for diagnostic reference only. **Do not quote any best-epoch validation metrics as main results; always quote the last-epoch metrics in Sections 3–5 above.**",
+            f"1. **Every Best-Epoch Column / Note (`{csv_disp}/image_models_cv_results.csv`, `{csv_disp}/pfrml_ablation_cv_results.csv`, and `best_ep_mae` in `{csv_disp}/fusion_cv_results.csv`):**",
+            "   - All image-model and PFRML-ablation CSV rows in `image_models_cv_results.csv` and `pfrml_ablation_cv_results.csv` recorded the minimum-`val_loss` checkpoint (`best_ep`) rather than the final epoch (`last_ep`), and `fusion_cv_results.csv` records `best_ep_mae=...` inside its `notes` column for diagnostic reference only. **Do not quote any best-epoch validation metrics as main results; always quote the last-epoch metrics in Sections 3–5 above.**",
             "",
             "| Experiment | Mode | CSV Source | Do-Not-Quote Best-Ep MAE | Authoritative Last-Ep Curve MAE (`Mean +- SD`) |",
             "| :--- | :---: | :--- | :---: | :---: |",
         ]
     )
-    for csv_name, idx_map in (("step3_results.csv", s3_idx), ("step4_results.csv", s4_idx)):
+    for csv_name, idx_map in (("image_models_cv_results.csv", s3_idx), ("pfrml_ablation_cv_results.csv", s4_idx)):
         seen_keys: Set[Tuple[str, str]] = set()
         for (eid, g_mode, fold_str), r in idx_map.items():
             if fold_str != "cv_mean" or (eid, g_mode) in seen_keys:
@@ -739,10 +762,10 @@ def build_report_numbers(
             else:
                 last_str = "—"
             lines.append(
-                f"| `{eid}` | `{g_mode}` | `outputs/results/{csv_name}` | ~~{best_m:.2f} +- {best_s:.2f}~~ | {last_str} |"
+                f"| `{eid}` | `{g_mode}` | `{csv_disp}/{csv_name}` | ~~{best_m:.2f} +- {best_s:.2f}~~ | {last_str} |"
             )
 
-    # Also parse `best_ep_mae=` from `step5_results.csv` notes
+    # Also parse `best_ep_mae=` from `fusion_cv_results.csv` notes
     s5_best_ep_by_exp: Dict[Tuple[str, str], List[float]] = {}
     for r in s5_rows:
         eid = str(r.get("experiment_id", ""))
@@ -762,16 +785,16 @@ def build_report_numbers(
             lm = _parse_float(r_m.get("mae"))
             lsd = _parse_float(r_s.get("mae"))
             lines.append(
-                f"| `{eid}` (`notes: best_ep_mae`) | `{g_mode}` | `outputs/results/step5_results.csv` | ~~{bm:.2f} +- {bsd:.2f}~~ | **{lm:.2f} +- {lsd:.2f}** |"
+                f"| `{eid}` (`notes: best_ep_mae`) | `{g_mode}` | `{csv_disp}/fusion_cv_results.csv` | ~~{bm:.2f} +- {bsd:.2f}~~ | **{lm:.2f} +- {lsd:.2f}** |"
             )
 
     lines.extend(
         [
             "",
-            "2. **Superseded `outputs/results/step4_summary.md` Best-Epoch Tables:**",
-            "   - `outputs/results/step4_summary.md` (generated by `scripts/summarize_step4.py` from `step4_results.csv`) reports minimum-`val_loss` (`best_ep`) numbers and Wilcoxon $p$-values at $n=5$. **Do not quote `outputs/results/step4_summary.md`**; use `outputs/results/step4_last_epoch_full.md` and Section 4 of this document.",
+            f"2. **Superseded `{csv_disp}/pfrml_best_epoch_summary_superseded.md` Best-Epoch Tables:**",
+            f"   - `{csv_disp}/pfrml_best_epoch_summary_superseded.md` (legacy best-epoch table derived from `pfrml_ablation_cv_results.csv`) reports minimum-`val_loss` (`best_ep`) numbers and Wilcoxon $p$-values at $n=5$. **Do not quote `pfrml_best_epoch_summary_superseded.md`**; use `outputs/results/last_epoch_summary.md` and Section 4 of this document.",
             "",
-            "3. **Experiment IDs with NO Curve File in `outputs/curves/` (or Partial `<5` Fold Curve Sets):**",
+            f"3. **Experiment IDs with NO Curve File in `{curves_disp}/` (or Partial `<5` Fold Curve Sets):**",
         ]
     )
 
@@ -787,22 +810,22 @@ def build_report_numbers(
     for eid in no_curve_ids:
         if eid in {"E0_median", "E0_ridge", "E1_metadata_mlp"}:
             lines.append(
-                f"   - `{eid}`: Closed-form / tabular baseline in `outputs/results/step2_results.csv` (no image-epoch curve file in `outputs/curves/`; quote only from Section 2 / Section 6)."
+                f"   - `{eid}`: Closed-form / tabular baseline in `{csv_disp}/baselines_cv_results.csv` (no image-epoch curve file in `{curves_disp}/`; quote only from Section 2 / Section 6)."
             )
         elif eid.endswith("_meta_off"):
             lines.append(
-                f"   - `{eid}`: Evaluation-only metadata-zeroed pass evaluated on the parent checkpoint at the end of training (no separate training curve file; quote from `outputs/results/step5_results.csv` / Section 5)."
+                f"   - `{eid}`: Evaluation-only metadata-zeroed pass evaluated on the parent checkpoint at the end of training (no separate training curve file; quote from `{csv_disp}/fusion_cv_results.csv` / Section 5)."
             )
         else:
             lines.append(
-                f"   - `{eid}`: **0 curve files in `outputs/curves/` and 0 CSV rows** (never run — do not quote)."
+                f"   - `{eid}`: **0 curve files in `{curves_disp}/` and 0 CSV rows** (never run — do not quote)."
             )
 
     partial_keys = sorted(
         [(eid, g_mode, sorted(fmap.keys())) for (eid, g_mode), fmap in last_epoch_by_key.items() if len(fmap) < 5]
     )
     if partial_keys:
-        lines.append("   - **Single-fold / partial (`<5` folds) curve sets in `outputs/curves/` (do not quote as 5-fold CV results):**")
+        lines.append(f"   - **Single-fold / partial (`<5` folds) curve sets in `{curves_disp}/` (do not quote as 5-fold CV results):**")
         for eid, g_mode, folds_list in partial_keys:
             fmap = last_epoch_by_key[(eid, g_mode)]
             maes = [_parse_float(fmap[k].get("mae")) for k in folds_list]
@@ -822,14 +845,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         description="Build authoritative REPORT_NUMBERS.md strictly from CSVs, curves, and prediction files."
     )
     parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Results base directory ('outputs' layout or flat 'results/' snapshot).",
+    )
+    parser.add_argument(
         "--outputs-dir",
         type=str,
-        default=str(PROJECT_ROOT / "outputs"),
+        default=None,
     )
     parser.add_argument(
         "--output-md",
         type=str,
-        default=str(PROJECT_ROOT / "outputs/results/REPORT_NUMBERS.md"),
+        default=None,
     )
     parser.add_argument("--n-boot", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
@@ -838,9 +867,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    output_md = Path(args.output_md)
+    base_dir = Path(args.results_dir or args.outputs_dir or (PROJECT_ROOT / "outputs"))
+    layout = resolve_results_layout(base_dir)
+    output_md = Path(args.output_md) if args.output_md else layout["report_numbers_md"]
     build_report_numbers(
-        outputs_dir=Path(args.outputs_dir),
+        results_dir=base_dir,
         output_md=output_md,
         n_boot=int(args.n_boot),
         seed=int(args.seed),

@@ -72,7 +72,7 @@ class TrainConfig:
 
 @dataclass
 class PFRMLHeadConfig:
-    """Configuration for `PFRMLModel`, `PFRMLFusionModel`, and Step 4/5 toggles."""
+    """Configuration for `PFRMLModel`, `PFRMLFusionModel`, and architecture toggles."""
 
     backbone: str = "mdnet_t"
     pretrained: bool = False
@@ -96,8 +96,8 @@ class PFRMLHeadConfig:
     reg_input: str = "chi_proto"          # "chi_proto" (Fig. 7 default) or "chi" (Eq. 5 literal)
     reg_hidden_dims: Tuple[int, ...] = (256,)
     reg_dropout: float = 0.1
-    modality_dropout: float = 0.3         # Step 5 fusion: per-sample prob of zeroing metadata m in train
-    aux_loss_weight: float = 0.5          # Step 5 fusion: weight on vision-only aux regression loss on chi
+    modality_dropout: float = 0.3         # Fusion: per-sample prob of zeroing metadata m in train
+    aux_loss_weight: float = 0.5          # Fusion: weight on vision-only aux regression loss on chi
 
 
 @dataclass

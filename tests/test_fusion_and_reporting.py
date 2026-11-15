@@ -1,9 +1,8 @@
-"""Unit tests for Step 5a: reg_input='chi', multimodal fusion, modality dropout, and vision aux loss."""
+"""Unit tests for reg_input='chi', multimodal fusion, modality dropout, and vision aux loss."""
 
 import torch
 
 from src.config import load_config
-from src.models.dcm import PFRMLModel
 from src.models.fusion import PFRMLFusionModel
 from src.models.pfrml_config import build_pfrml_from_config
 from src.pfrml_losses import PFRMLMultitaskLoss
@@ -18,7 +17,7 @@ def test_fusion_r1_and_fusion_full_shapes() -> None:
     metadata = torch.randn(bs, 5)
     targets = torch.tensor([0, 1, 2, 3], dtype=torch.long)
 
-    cfg_r1 = load_config("configs/fusion_r1.yaml")
+    cfg_r1 = load_config("configs/fusion_regression_only_neck.yaml")
     cfg_r1.pfrml.pretrained = False
     model_r1 = PFRMLFusionModel(
         backbone_name="mobilenetv3_s",
@@ -38,7 +37,7 @@ def test_fusion_r1_and_fusion_full_shapes() -> None:
     assert out_r1.meta_embed is not None and out_r1.meta_embed.shape == (bs, 32)
     assert out_r1.logits is None and out_r1.probs is None
 
-    cfg_full = load_config("configs/fusion_full.yaml")
+    cfg_full = load_config("configs/fusion_pfrml_full.yaml")
     assert cfg_full.data.group_mode == "spatial_cluster"
     assert cfg_r1.data.group_mode == "spatial_cluster"
     model_full = PFRMLFusionModel(
@@ -226,7 +225,7 @@ def test_prototype_buffers_unchanged_by_eval_forward_in_fusion() -> None:
 def test_reg_input_chi_regression_unchanged_when_prototype_probs_perturbed() -> None:
     """With reg_input='chi', regression output h(chi) is unchanged when prototype probs/prototypes change."""
     torch.manual_seed(21)
-    cfg = load_config("configs/pfrml_reg_chi.yaml")
+    cfg = load_config("configs/pfrml_eq5_regression.yaml")
     assert cfg.pfrml.reg_input == "chi"
     assert cfg.pfrml.use_prototypes is True
 

@@ -1,8 +1,8 @@
 """PyTorch atmospheric haze statistics and physics-prior extractor.
 
 Designed for dual use:
-1. Step 2 baseline E0 (Ridge regression on per-band haze statistics).
-2. Step 4+ in-model physics-prior branch on pre-normalisation RGB pixels [0, 1]
+1. Baseline E0 (Ridge regression on per-band haze statistics).
+2. In-model physics-prior branch on pre-normalisation RGB pixels [0, 1]
    using purely static, differentiable, Core ML-compatible PyTorch ops.
 
 Citations:
@@ -152,7 +152,7 @@ class HazeStatisticsExtractor(nn.Module):
         return torch.stack(feats, dim=1)  # [B, 18]
 
     def compute_physics_priors(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute 4 scalar atmospheric physics priors for Step 4+ fusion:
+        """Compute 4 scalar atmospheric physics priors for physics-gate fusion:
         [entropy, rms_contrast, dark_channel_transmission, extinction (-ln t)].
 
         Shape: [B, 4]. Pure differentiable static PyTorch ops on pre-norm pixels.

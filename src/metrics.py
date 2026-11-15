@@ -130,7 +130,7 @@ def compute_all_metrics(
     y_true_bin: Optional[Sequence[int]] = None,
     y_pred_bin: Optional[Sequence[int]] = None,
 ) -> Dict[str, float]:
-    """Compute the full Step 2+ evaluation metric suite on AQI (unscaled) targets."""
+    """Compute the full 10-metric evaluation suite on AQI (unscaled) targets."""
     yt = np.asarray(y_true, dtype=np.float64).ravel()
     yp = np.asarray(y_pred, dtype=np.float64).ravel()
 

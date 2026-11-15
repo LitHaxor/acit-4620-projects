@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""CPU-only, read-only full last-epoch summary generator (Step 5a, Task B1 / Step 5b Part 0a).
+"""CPU-only, read-only full last-epoch summary generator.
 
 From `outputs/curves/{experiment_id}_{group_mode}_fold{fold}.csv` extracts the
 LAST-epoch row per fold by EXACT experiment_id (`group_mode in {'station', 'spatial_cluster'}`),
-never by prefix glob, and writes `outputs/results/step4_last_epoch_full.md`:
+never by prefix glob, and writes `outputs/results/last_epoch_summary.md`:
 1. For every experiment with 5 folds, reports `mean +- SD` (sample SD, ddof=1)
    across all 10 evaluation metrics:
    `mae, rmse, plcc, srcc, r2, acc, pm1_acc, macro_f1, tail_mae, tail_f1`.
@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 VALID_GROUP_MODES: Tuple[str, ...] = ("station", "spatial_cluster")
 CURVE_FILENAME_RE = re.compile(
@@ -223,7 +223,7 @@ def generate_full_last_epoch_summary(
             ordered_keys.append(k)
 
     lines: List[str] = [
-        "# Step 4 Full Last-Epoch Metrics & Paired MAE Comparisons",
+        "# Full Last-Epoch Metrics & Paired MAE Comparisons",
         "",
         f"- **Source:** Last-epoch row per fold from `{curves_dir.relative_to(PROJECT_ROOT) if curves_dir.is_relative_to(PROJECT_ROOT) else curves_dir}/{{experiment_id}}_{{group_mode}}_fold{{fold}}.csv` (`n=5` folds per experiment, exact `{{experiment_id}}` match, `group_mode in {{'station', 'spatial_cluster'}}`).",
         "- **Summary statistics:** `mean +- SD` (sample standard deviation, `ddof=1`); paired differences report `mean diff +- SE` (`SE = SD / sqrt(5)`, `candidate - reference`, negative = candidate lowers MAE) and `folds won / 5` (no p-values).",
@@ -358,7 +358,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-md",
         type=str,
-        default=str(PROJECT_ROOT / "outputs/results/step4_last_epoch_full.md"),
+        default=str(PROJECT_ROOT / "outputs/results/last_epoch_summary.md"),
         help="Output Markdown file path.",
     )
     return parser.parse_args(argv)

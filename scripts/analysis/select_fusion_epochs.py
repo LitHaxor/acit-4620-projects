@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Choose optimal epoch count N for E5_fusion_r1_p00 (Step 5c, Part 1).
+"""Choose optimal epoch count N for E5_fusion_r1_p00 via 3-epoch centered moving average.
 
 CPU-only, read-only script:
 - Reads `outputs/curves/E5_fusion_r1_p00_spatial_cluster_fold{0..4}.csv`.
@@ -7,7 +7,7 @@ CPU-only, read-only script:
   centered moving average.
 - N = epoch with the lowest 3-epoch centered moving average, restricted to N >= 6.
 - Prints mean MAE at epochs 4, 6, 8, 10, 12, 15, 20, 30 and the chosen N, and
-  writes `outputs/results/step5c_epochs.md`.
+  writes `outputs/results/fusion_epoch_selection.md`.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 REPORT_EPOCHS: Tuple[int, ...] = (4, 6, 8, 10, 12, 15, 20, 30)
 MIN_ALLOWED_EPOCH: int = 6
 
@@ -93,9 +93,9 @@ def compute_epoch_stats(
 
 
 def read_chosen_n_from_markdown(md_path: Path) -> int:
-    """Parse `CHOSEN_N: <int>` or `N = <int>` from `outputs/results/step5c_epochs.md`."""
+    """Parse `CHOSEN_N: <int>` or `N = <int>` from `outputs/results/fusion_epoch_selection.md`."""
     if not md_path.exists():
-        raise FileNotFoundError(f"Step 5c epochs file not found: {md_path}")
+        raise FileNotFoundError(f"Fusion epoch selection file not found: {md_path}")
     text = md_path.read_text(encoding="utf-8")
     m = re.search(r"CHOSEN_N:\s*([0-9]+)", text)
     if not m:
@@ -105,7 +105,7 @@ def read_chosen_n_from_markdown(md_path: Path) -> int:
     return int(m.group(1))
 
 
-def generate_step5c_epochs_report(
+def generate_fusion_epoch_selection_report(
     *,
     curves_dir: Path,
     output_md: Path,
@@ -118,7 +118,7 @@ def generate_step5c_epochs_report(
     best_row = rows_by_ep[chosen_n]
 
     lines: List[str] = [
-        "# Step 5c Epoch Selection (`E5_fusion_r1_p00`, 5-Fold `spatial_cluster` CV)",
+        "# Multimodal Fusion Epoch Selection (`E5_fusion_r1_p00`, 5-Fold `spatial_cluster` CV)",
         "",
         "- **Source curves:** `outputs/curves/E5_fusion_r1_p00_spatial_cluster_fold{0..4}.csv`",
         f"- **Selection rule:** Minimize 3-epoch centered moving average (`CMA-3`) of 5-fold mean validation MAE subject to `epoch >= {min_epoch}`.",
@@ -176,7 +176,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-md",
         type=str,
-        default=str(PROJECT_ROOT / "outputs/results/step5c_epochs.md"),
+        default=str(PROJECT_ROOT / "outputs/results/fusion_epoch_selection.md"),
     )
     return parser.parse_args(argv)
 
@@ -184,7 +184,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     output_md = Path(args.output_md)
-    rows, chosen_n, _ = generate_step5c_epochs_report(
+    rows, chosen_n, _ = generate_fusion_epoch_selection_report(
         curves_dir=Path(args.curves_dir),
         output_md=output_md,
     )

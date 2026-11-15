@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Final full-training and one-shot test evaluation CLI (`scripts/final_train_eval.py`).
+"""Final full-training and one-shot test evaluation CLI (`scripts/final_evaluation.py`).
 
-THIS IS THE ONLY SCRIPT ALLOWED TO EVALUATE THE TEST SET IN STEP 5.
+THIS IS THE ONLY SCRIPT ALLOWED TO EVALUATE THE TEST SET.
 
 Features:
 - Trains on ALL 8,176 cleaned training images for a fixed 30 epochs and evaluates
   the LAST epoch (no validation-based selection, no hyperparameter changes).
 - Refuses (exit code 1 with clear error message) if `--name` already exists in
-  `outputs/results/final_results.csv` (or the target `--output-csv`).
+  `outputs/results/final_test_results.csv` (or the target `--output-csv`).
 - Reports all 10 metrics (`mae, rmse, plcc, srcc, r2, acc, pm1_acc, macro_f1, tail_mae, tail_f1`)
   plus 95% station-bootstrap CI for MAE (`1,000` resamples of stations with replacement)
   on:
@@ -142,7 +142,7 @@ def name_exists_in_final_csv(csv_path: Path, name: str) -> bool:
 
 
 def append_final_row(csv_path: Path, row: Dict[str, Any]) -> None:
-    """Atomically append a row to `final_results.csv`."""
+    """Atomically append a row to `final_test_results.csv`."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = csv_path.with_name(f".{csv_path.name}.lock")
     ordered = {k: row.get(k, "") for k in FINAL_CSV_FIELDNAMES}
@@ -223,7 +223,7 @@ def _load_train_only_cleaned(train_csv_path: str | Path) -> pd.DataFrame:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Final full-train and one-shot test evaluation (Step 5b Part 2)."
+        description="Final full-train and one-shot test evaluation."
     )
     parser.add_argument("--name", type=str, required=True, help="Unique final run name (e.g., F_E2, F_PFRML_full).")
     parser.add_argument(
@@ -273,14 +273,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.output_csv is not None:
         results_csv = Path(args.output_csv)
     else:
-        results_csv = outputs_dir / "results" / "final_results.csv"
+        results_csv = outputs_dir / "results" / "final_test_results.csv"
 
     run_name = args.name.strip()
     if not run_name:
         print("ERROR: --name must be non-empty.", file=sys.stderr)
         return 1
 
-    # Refuse if --name already exists in final_results.csv (one-shot test protection)
+    # Refuse if --name already exists in final_test_results.csv (one-shot test protection)
     if name_exists_in_final_csv(results_csv, run_name):
         print(
             f"REFUSED: Final evaluation name {run_name!r} already exists in {results_csv}. "

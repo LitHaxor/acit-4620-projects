@@ -34,7 +34,6 @@ from src.models.baselines import (
 )
 from src.models.dcm import PFRMLModel
 from src.models.fusion import (
-    FUSION_MODEL_NAMES,
     FUSION_MODEL_SPECS,
     PFRMLFusionModel,
 )
@@ -63,25 +62,33 @@ CSV_FIELDNAMES: Tuple[str, ...] = (
 )
 
 
+_CONFIG_STEM_TO_EXPERIMENT_TAG: Dict[str, str] = {
+    "pfrml_prototype_multitask": "baseline",
+    "pfrml_regression_only": "r1_no_prototypes",
+    "pfrml_eq5_regression": "reg_chi",
+    "pfrml_attention_pooling": "attn_pool",
+    "pfrml_all_toggles": "full",
+}
+
+
 def default_pfrml_experiment_id(
     model_name: str,
     config_path: Union[str, Path],
     reg_input: str = "chi_proto",
 ) -> str:
-    """Format default Step 4/5 PFRML experiment ID.
-
-    Step 4 configs use `E4_<backbone>_<config name>`; Step 5 `pfrml_reg_chi`
-    (`reg_input='chi'`) uses `E5_<backbone>_<config name>`.
-    """
+    """Format default PFRML experiment ID (`E4_<backbone>_<tag>` or `E5_<backbone>_reg_chi`)."""
     backbone = PFRML_MODEL_SPECS[model_name][0]
     stem = Path(config_path).stem
-    cfg_tag = stem[len("pfrml_") :] if stem.startswith("pfrml_") else stem
+    if stem in _CONFIG_STEM_TO_EXPERIMENT_TAG:
+        cfg_tag = _CONFIG_STEM_TO_EXPERIMENT_TAG[stem]
+    else:
+        cfg_tag = stem[len("pfrml_") :] if stem.startswith("pfrml_") else stem
     prefix = "E5" if (cfg_tag == "reg_chi" or reg_input == "chi") else "E4"
     return f"{prefix}_{backbone}_{cfg_tag}"
 
 
 def default_fusion_experiment_id(model_name: str) -> str:
-    """Format default Step 5 fusion experiment ID as `E5_<model_name>`."""
+    """Format default fusion experiment ID as `E5_<model_name>`."""
     return f"E5_{model_name}"
 
 
@@ -531,11 +538,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.output_csv is None:
         if experiment_id.startswith("E5_") or model_name in FUSION_MODEL_SPECS:
-            default_csv_name = "step5_eval.csv"
+            default_csv_name = "fusion_eval.csv"
         elif model_name in PFRML_MODEL_SPECS:
-            default_csv_name = "step4_eval.csv"
+            default_csv_name = "pfrml_ablation_eval.csv"
         else:
-            default_csv_name = "step3_eval.csv"
+            default_csv_name = "image_models_eval.csv"
         output_csv: Optional[Path] = Path(cfg.outputs_dir) / "results" / default_csv_name
     elif args.output_csv == "":
         output_csv = None

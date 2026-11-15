@@ -25,20 +25,21 @@ except ImportError:
     sys.exit(1)
 
 REPO_ID = "DeadCardassian/PM25Vision"
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATASETS_DIR = PROJECT_ROOT / "datasets"
 
 SPLITS = ["test", "train"]
+
 
 def process_split(split_name: str):
     print("\n==========================================")
     print(f"Downloading {split_name}.parquet from Hugging Face...")
     print("==========================================")
-    
+
     parquet_path = hf_hub_download(
         repo_id=REPO_ID,
         filename=f"{split_name}.parquet",
-        repo_type="dataset"
+        repo_type="dataset",
     )
     print(f"Downloaded to cache: {parquet_path}")
 
@@ -48,7 +49,7 @@ def process_split(split_name: str):
 
     print(f"Reading {split_name} parquet table...")
     table = pq.read_table(parquet_path)
-    
+
     # 1. Save metadata (all columns except the raw 'image' bytes)
     metadata_df = table.drop(["image"]).to_pandas()
     metadata_path = split_dir / "metadata.csv"
@@ -67,14 +68,16 @@ def process_split(split_name: str):
 
     print(f"Completed {split_name}: {len(list(images_dir.glob('*.jpg'))):,} images on disk.")
 
+
 def main():
     print("PM25Vision Dataset Downloader")
     print(f"Destination: {DATASETS_DIR}")
-    
+
     for split in SPLITS:
         process_split(split)
 
     print("\n All splits successfully downloaded and extracted!")
+
 
 if __name__ == "__main__":
     main()

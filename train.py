@@ -1,4 +1,4 @@
-"""Training CLI for Step 2 baselines (E0, E1), Step 3 vision models (E2, E3, E3b), Step 4 PFRML models (E4), and Step 5 Fusion models (E5)."""
+"""Training CLI for tabular baselines (E0, E1), image-only baselines (E2, E3, E3b), PFRML models (E4), and Multimodal Fusion models (E5)."""
 
 import argparse
 import csv
@@ -57,7 +57,7 @@ from src.models.fusion import (
 from src.models.mdnet import build_mdnet_t, build_mobilenet_v3_small_md_neck
 from src.pfrml_losses import PFRMLMultitaskLoss
 
-STEP3_IMAGE_MODEL_NAMES: Tuple[str, ...] = (
+IMAGE_BASELINE_MODEL_NAMES: Tuple[str, ...] = (
     "resnet18_scratch",
     "resnet18_pretrained",
     "mobilenetv3_s_pretrained",
@@ -66,7 +66,7 @@ STEP3_IMAGE_MODEL_NAMES: Tuple[str, ...] = (
     "mdnet_t_cls",
 )
 IMAGE_MODEL_NAMES: Tuple[str, ...] = (
-    *STEP3_IMAGE_MODEL_NAMES,
+    *IMAGE_BASELINE_MODEL_NAMES,
     *PFRML_MODEL_NAMES,
     *FUSION_MODEL_NAMES,
 )
@@ -145,7 +145,7 @@ def _subsample_indices(indices: np.ndarray, count: int) -> np.ndarray:
 
 
 def build_image_model(model_name: str, cfg: Config) -> Tuple[nn.Module, str]:
-    """Instantiate a Step 3, Step 4 PFRML, or Step 5 Fusion model and return (model, head_type)."""
+    """Instantiate an image baseline, PFRML, or Multimodal Fusion model and return (model, head_type)."""
     num_classes = int(cfg.model.num_classes)
     if model_name == "resnet18_scratch":
         return build_resnet18_scratch(head_type="regression", num_classes=num_classes), "regression"
@@ -1039,7 +1039,7 @@ def _train_predict_image_model(
     mean_ep_s = float(np.mean(epoch_times)) if epoch_times else 0.0
 
     if is_e5:
-        # Step 5a Policy A: E5_ runs report LAST epoch and save two checkpoints (best-loss & last-epoch)
+        # E5_ runs report LAST epoch and save two checkpoints (best-loss & last-epoch)
         _atomic_torch_save(
             {
                 "state_dict": best_state,
@@ -1362,11 +1362,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     group_mode = cfg.data.group_mode
     if args.output_csv is None:
         if experiment_id.startswith("E5_") or model_name in FUSION_MODEL_SPECS:
-            default_csv_name = "step5_results.csv"
+            default_csv_name = "fusion_cv_results.csv"
         elif model_name in PFRML_MODEL_SPECS:
-            default_csv_name = "step4_results.csv"
+            default_csv_name = "pfrml_ablation_cv_results.csv"
         else:
-            default_csv_name = "step3_results.csv"
+            default_csv_name = "image_models_cv_results.csv"
         output_csv: Optional[Path] = Path(cfg.outputs_dir) / "results" / default_csv_name
     elif args.output_csv == "":
         output_csv = None

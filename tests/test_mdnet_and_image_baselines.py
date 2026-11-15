@@ -1,4 +1,4 @@
-"""Unit tests for Step 3: MDNet-T backbone, receptive field, E2 baselines, and scheduler."""
+"""Unit tests for MDNet-T backbone, receptive field, image baselines, and scheduler."""
 
 import pytest
 import torch

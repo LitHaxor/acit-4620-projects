@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU-only, read-only training-collapse diagnostic script (Step 5a, Task B2).
+"""CPU-only, read-only training failure and collapse diagnostic script.
 
 Reads per-epoch curves from `outputs/curves/{experiment_id}_station_fold{fold}.csv`
 for:
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 TARGET_EXPERIMENTS: Tuple[str, ...] = (
     "E4_mdnet_t_baseline_ep60",
@@ -139,7 +139,7 @@ def generate_collapse_diagnostics(
     output_md: Path,
 ) -> str:
     lines: List[str] = [
-        "# Step 4 Collapse & Optimization Diagnostics (`collapse.md`)",
+        "# PFRML Collapse & Optimization Diagnostics (`collapse.md`)",
         "",
         "- **Rule:** `learning` if `last train_loss < 0.5 * epoch-1 train_loss`, else `not learning`; `last R2 ~ 0` if `|last R2| < 0.05`.",
         "",

@@ -1,44 +1,42 @@
 #!/usr/bin/env python3
-"""Resumable Step 5c queue runner (`scripts/run_queue_step5c.py`).
+"""Resumable fusion epoch-selected CV and final evaluation queue runner (`scripts/experiments/queue_fusion_final.py`).
 
-Design mirrors `scripts/run_queue_step5.py`:
-- Logs to `outputs/logs/queue_step5c.log` (or `outputs/smoke/logs/queue_step5c.log` in `--smoke`).
+Design mirrors `scripts/experiments/queue_fusion_cv.py`:
+- Logs to `outputs/logs/queue_fusion_final.log` (or `outputs/smoke/logs/queue_fusion_final.log` in `--smoke`).
 - Prints projected total hours before starting (expected under 1.0 h; `--project-only` prints and exits).
-- Item 1: `E5_fusion_r1_p00_ep{N}` (`fusion_r1_mobilenetv3_s`, `configs/fusion_r1.yaml`,
+- Item 1: `E5_fusion_r1_p00_ep{N}` (`fusion_r1_mobilenetv3_s`, `configs/fusion_regression_only_neck.yaml`,
   `spatial_cluster`, 5 folds, `--modality-dropout 0.0`, `--lr 1e-3`, `--epochs N`, where `N`
-  is read from `outputs/results/step5c_epochs.md`). Results go to `outputs/results/step5_results.csv`.
+  is read from `outputs/results/fusion_epoch_selection.md`). Results go to `outputs/results/fusion_cv_results.csv`.
 - Item 2 (deterministic decision rule, no discretion): compute 5-fold mean last-epoch MAE of Item 1.
   If `< 46.95`, `E_final = N`, else `E_final = 30`. Write both numbers and the decision to
-  `outputs/results/step5c_decision.md` and to the queue log.
-- Item 3: `scripts/final_train_eval.py --name F_FUSION_R1 --model fusion_r1_mobilenetv3_s
-  --config configs/fusion_r1.yaml --modality-dropout 0.0 --epochs E_final --seed 42`.
-  If `F_FUSION_R1` already exists in `outputs/results/final_results.csv`, skip with a clear message.
+  `outputs/results/fusion_epoch_decision.md` and to the queue log.
+- Item 3: `scripts/final_evaluation.py --name F_FUSION_R1 --model fusion_r1_mobilenetv3_s
+  --config configs/fusion_regression_only_neck.yaml --modality-dropout 0.0 --epochs E_final --seed 42`.
+  If `F_FUSION_R1` already exists in `outputs/results/final_test_results.csv`, skip with a clear message.
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import math
-import os
 from pathlib import Path
 import re
 import sys
-from typing import Dict, List, Optional, Sequence, TextIO, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.choose_epochs import (  # noqa: E402
-    generate_step5c_epochs_report,
+from scripts.analysis.select_fusion_epochs import (  # noqa: E402
+    generate_fusion_epoch_selection_report,
     read_chosen_n_from_markdown,
 )
-from scripts.final_train_eval import name_exists_in_final_csv  # noqa: E402
-from scripts.run_queue_step5 import (  # noqa: E402
-    Step5RunSpec,
+from scripts.final_evaluation import name_exists_in_final_csv  # noqa: E402
+from scripts.experiments.queue_fusion_cv import (  # noqa: E402
+    FusionQueueRunSpec,
     _atomic_write_text,
     _maybe_append_cv_summary,
     _parse_float,
@@ -47,7 +45,7 @@ from scripts.run_queue_step5 import (  # noqa: E402
     index_val_rows,
     load_results_rows,
     log_line,
-    project_total_queue_hours_step5,
+    project_fusion_cv_hours,
 )
 
 
@@ -57,26 +55,26 @@ DEFAULT_MAX_HOURS: float = 1.0
 
 
 def resolve_chosen_n(epochs_md_path: Optional[Path] = None) -> int:
-    """Read chosen epoch `N` from `outputs/results/step5c_epochs.md` (generating it if missing)."""
-    target_md = epochs_md_path or (PROJECT_ROOT / "outputs/results/step5c_epochs.md")
+    """Read chosen epoch `N` from `outputs/results/fusion_epoch_selection.md` (generating it if missing)."""
+    target_md = epochs_md_path or (PROJECT_ROOT / "outputs/results/fusion_epoch_selection.md")
     if not target_md.exists():
-        generate_step5c_epochs_report(
+        generate_fusion_epoch_selection_report(
             curves_dir=PROJECT_ROOT / "outputs/curves",
             output_md=target_md,
         )
     return read_chosen_n_from_markdown(target_md)
 
 
-def build_step5c_item1_spec(chosen_n: int, smoke: bool = False) -> Step5RunSpec:
-    """Build the `Step5RunSpec` for Item 1 (`E5_fusion_r1_p00_ep{N}`)."""
+def build_fusion_epn_cv_spec(chosen_n: int, smoke: bool = False) -> FusionQueueRunSpec:
+    """Build the `FusionQueueRunSpec` for Item 1 (`E5_fusion_r1_p00_ep{N}`)."""
     cv_folds: Tuple[int, ...] = (0, 1) if smoke else (0, 1, 2, 3, 4)
     ep = 1 if smoke else int(chosen_n)
-    return Step5RunSpec(
+    return FusionQueueRunSpec(
         order_idx=1,
         rung=f"1_E5_fusion_r1_p00_ep{chosen_n}",
         experiment_id=f"E5_fusion_r1_p00_ep{chosen_n}",
         model="fusion_r1_mobilenetv3_s",
-        config="configs/fusion_r1.yaml",
+        config="configs/fusion_regression_only_neck.yaml",
         group_mode="spatial_cluster",
         folds=cv_folds,
         lr=1e-3,
@@ -86,15 +84,15 @@ def build_step5c_item1_spec(chosen_n: int, smoke: bool = False) -> Step5RunSpec:
     )
 
 
-def build_step5c_item3_spec(e_final: int, smoke: bool = False) -> Step5RunSpec:
-    """Build the `Step5RunSpec` for Item 3 (`F_FUSION_R1`)."""
+def build_fusion_final_spec(e_final: int, smoke: bool = False) -> FusionQueueRunSpec:
+    """Build the `FusionQueueRunSpec` for Item 3 (`F_FUSION_R1`)."""
     ep = 1 if smoke else int(e_final)
-    return Step5RunSpec(
+    return FusionQueueRunSpec(
         order_idx=3,
         rung="3_FINAL_FUSION_R1",
         experiment_id="F_FUSION_R1",
         model="fusion_r1_mobilenetv3_s",
-        config="configs/fusion_r1.yaml",
+        config="configs/fusion_regression_only_neck.yaml",
         group_mode="full_train",
         folds=(),
         lr=1e-3,
@@ -106,7 +104,7 @@ def build_step5c_item3_spec(e_final: int, smoke: bool = False) -> Step5RunSpec:
 
 
 def compute_item1_last_epoch_mean_mae(
-    spec: Step5RunSpec,
+    spec: FusionQueueRunSpec,
     results_csv: Path,
 ) -> Tuple[float, float, Dict[int, float]]:
     """Compute `(mean_mae, sd_mae, per_fold_mae)` of Item 1 across `spec.folds`."""
@@ -178,7 +176,7 @@ def write_decision_markdown(
 ) -> None:
     fold_Parts = ", ".join(f"F{k}={v:.2f}" for k, v in sorted(per_fold.items()))
     lines = [
-        "# Step 5c Epoch Decision (`step5c_decision.md`)",
+        "# Fusion Final Epoch Decision (`fusion_epoch_decision.md`)",
         "",
         f"- **Item 1 Experiment:** `{exp_id}` (`E5_fusion_r1_p00_epN` with `N = {chosen_n}`)",
         f"- **Candidate Epoch Count (`N`):** `{chosen_n}`",
@@ -191,7 +189,7 @@ def write_decision_markdown(
     _atomic_write_text(decision_md, "\n".join(lines) + "\n")
 
 
-def project_step5c_hours(
+def project_fusion_final_hours(
     *,
     chosen_n: int,
     e_final_for_proj: int,
@@ -201,24 +199,24 @@ def project_step5c_hours(
     smoke: bool = False,
     force_benchmark: bool = False,
 ) -> Tuple[float, List[Dict[str, object]]]:
-    """Project total runtime in hours for Step 5c (Item 1 + Item 3)."""
-    spec1 = build_step5c_item1_spec(chosen_n=chosen_n, smoke=smoke)
-    spec3 = build_step5c_item3_spec(e_final=e_final_for_proj, smoke=smoke)
+    """Project total runtime in hours for fusion final queue (Item 1 + Item 3)."""
+    spec1 = build_fusion_epn_cv_spec(chosen_n=chosen_n, smoke=smoke)
+    spec3 = build_fusion_final_spec(e_final=e_final_for_proj, smoke=smoke)
     all_specs = [spec1, spec3]
 
     s5_rows = load_results_rows(results_csv)
-    if not s5_rows and (PROJECT_ROOT / "outputs/results/step5_results.csv").exists():
-        s5_rows = load_results_rows(PROJECT_ROOT / "outputs/results/step5_results.csv")
+    if not s5_rows and (PROJECT_ROOT / "outputs/results/fusion_cv_results.csv").exists():
+        s5_rows = load_results_rows(PROJECT_ROOT / "outputs/results/fusion_cv_results.csv")
     fin_rows = load_results_rows(final_csv)
-    s4_rows = load_results_rows(PROJECT_ROOT / "outputs/results/step4_results.csv")
-    s3_rows = load_results_rows(PROJECT_ROOT / "outputs/results/step3_results.csv")
+    s4_rows = load_results_rows(PROJECT_ROOT / "outputs/results/pfrml_ablation_cv_results.csv")
+    s3_rows = load_results_rows(PROJECT_ROOT / "outputs/results/image_models_cv_results.csv")
 
-    total_h, _, breakdown = project_total_queue_hours_step5(
+    total_h, _, breakdown = project_fusion_cv_hours(
         all_specs=all_specs,
-        step5_rows=s5_rows,
+        fusion_rows=s5_rows,
         final_rows=fin_rows,
-        step4_rows=s4_rows,
-        step3_rows=s3_rows,
+        pfrml_rows=s4_rows,
+        image_rows=s3_rows,
         indexed_val=index_val_rows(load_results_rows(results_csv)),
         outputs_dir=outputs_dir,
         smoke=smoke,
@@ -227,7 +225,7 @@ def project_step5c_hours(
     return total_h, breakdown
 
 
-def run_queue_step5c(
+def run_fusion_final_queue(
     *,
     smoke: bool = False,
     outputs_dir: Optional[Path] = None,
@@ -241,31 +239,31 @@ def run_queue_step5c(
         outputs_dir = PROJECT_ROOT / ("outputs/smoke" if smoke else "outputs")
     if results_csv is None:
         results_csv = (
-            outputs_dir / "step5_results.csv"
+            outputs_dir / "fusion_cv_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/step5_results.csv"
+            else PROJECT_ROOT / "outputs/results/fusion_cv_results.csv"
         )
     if final_csv is None:
         final_csv = (
-            outputs_dir / "final_results.csv"
+            outputs_dir / "final_test_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/final_results.csv"
+            else PROJECT_ROOT / "outputs/results/final_test_results.csv"
         )
     if decision_md is None:
         decision_md = (
-            outputs_dir / "results" / "step5c_decision.md"
+            outputs_dir / "results" / "fusion_epoch_decision.md"
             if smoke
-            else PROJECT_ROOT / "outputs/results/step5c_decision.md"
+            else PROJECT_ROOT / "outputs/results/fusion_epoch_decision.md"
         )
 
     chosen_n = resolve_chosen_n(epochs_md)
-    log_path = outputs_dir / "logs" / "queue_step5c.log"
+    log_path = outputs_dir / "logs" / "queue_fusion_final.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Worst-case E_final before Item 2 decision is max(chosen_n, 30) = 30
     existing_e_final = read_e_final_from_decision_md(decision_md)
     proj_e_final = existing_e_final if existing_e_final is not None else max(chosen_n, FALLBACK_FINAL_EPOCHS)
-    total_proj_h, breakdown = project_step5c_hours(
+    total_proj_h, breakdown = project_fusion_final_hours(
         chosen_n=chosen_n,
         e_final_for_proj=proj_e_final,
         outputs_dir=outputs_dir,
@@ -278,27 +276,27 @@ def run_queue_step5c(
     with log_path.open("a", encoding="utf-8") as log_f:
         log_line(
             log_f,
-            f"=== STEP 5C QUEUE START (smoke={smoke}, N={chosen_n}, "
+            f"=== FUSION FINAL QUEUE START (smoke={smoke}, N={chosen_n}, "
             f"results_csv={results_csv}, final_csv={final_csv}, decision_md={decision_md}) ===",
         )
         proj_msg = (
-            f"TIME_GUARD Step 5c projected total runtime: {total_proj_h:.2f} h "
+            f"TIME_GUARD Fusion final queue projected total runtime: {total_proj_h:.2f} h "
             f"(N={chosen_n}, E_final_est={proj_e_final}, limit={max_hours:.2f} h)"
         )
         log_line(log_f, proj_msg)
         print(proj_msg, flush=True)
 
         if not smoke and total_proj_h > float(max_hours):
-            stop_path = outputs_dir / "QUEUE_STOPPED_STEP5C.txt"
+            stop_path = outputs_dir / "QUEUE_STOPPED_FUSION_FINAL.txt"
             _atomic_write_text(
                 stop_path,
-                f"Step 5c time guard triggered: projected {total_proj_h:.2f}h > {max_hours:.2f}h\n",
+                f"Fusion final queue time guard triggered: projected {total_proj_h:.2f}h > {max_hours:.2f}h\n",
             )
             log_line(log_f, f"STOPPED: projected {total_proj_h:.2f}h > {max_hours:.2f}h ({stop_path})")
             return 1
 
         # Item 1: E5_fusion_r1_p00_ep{N} across folds
-        spec1 = build_step5c_item1_spec(chosen_n=chosen_n, smoke=smoke)
+        spec1 = build_fusion_epn_cv_spec(chosen_n=chosen_n, smoke=smoke)
         any_item1_ran = False
         for fold in spec1.folds:
             indexed = index_val_rows(load_results_rows(results_csv))
@@ -361,7 +359,7 @@ def run_queue_step5c(
             )
 
         # Item 3: Final evaluation F_FUSION_R1
-        spec3 = build_step5c_item3_spec(e_final=e_final, smoke=smoke)
+        spec3 = build_fusion_final_spec(e_final=e_final, smoke=smoke)
         assert spec3.final_name is not None
         if name_exists_in_final_csv(final_csv, spec3.final_name):
             skip_msg = (
@@ -385,13 +383,13 @@ def run_queue_step5c(
                     f"CRASH FINAL rung={spec3.rung} name={spec3.final_name} exc={exc!r} — continuing",
                 )
 
-        log_line(log_f, "=== STEP 5C QUEUE COMPLETE ===")
+        log_line(log_f, "=== FUSION FINAL QUEUE COMPLETE ===")
     return 0
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Resumable Step 5c queue runner (E5_fusion_r1_p00_epN, decision rule, F_FUSION_R1)."
+        description="Resumable fusion epoch-selected CV and final evaluation queue (E5_fusion_r1_p00_epN, decision rule, F_FUSION_R1)."
     )
     parser.add_argument(
         "--smoke",
@@ -417,12 +415,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     chosen_n = resolve_chosen_n()
     if args.project_only:
         outputs_dir = PROJECT_ROOT / "outputs"
-        results_csv = outputs_dir / "results" / "step5_results.csv"
-        final_csv = outputs_dir / "results" / "final_results.csv"
-        decision_md = outputs_dir / "results" / "step5c_decision.md"
+        results_csv = outputs_dir / "results" / "fusion_cv_results.csv"
+        final_csv = outputs_dir / "results" / "final_test_results.csv"
+        decision_md = outputs_dir / "results" / "fusion_epoch_decision.md"
         existing_e_final = read_e_final_from_decision_md(decision_md)
         e_final_est = existing_e_final if existing_e_final is not None else max(chosen_n, FALLBACK_FINAL_EPOCHS)
-        total_h, breakdown = project_step5c_hours(
+        total_h, breakdown = project_fusion_final_hours(
             chosen_n=chosen_n,
             e_final_for_proj=e_final_est,
             outputs_dir=outputs_dir,
@@ -444,7 +442,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
 
-    return run_queue_step5c(
+    return run_fusion_final_queue(
         smoke=bool(args.smoke),
         max_hours=float(args.max_hours),
     )

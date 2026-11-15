@@ -1,4 +1,4 @@
-"""Step 2 & Step 3 baseline models.
+"""Tabular, metadata, and image-only baseline models.
 
 - E0: `MedianBaseline`, `HazeRidgeBaseline` (18 atmospheric haze statistics).
 - E1: `MetadataMLP` (5 -> 64 -> 32 -> 1 over spherical GPS + cyclic month).
@@ -21,7 +21,7 @@ class MetadataMLP(nn.Module):
     """5 -> 64 -> 32 -> 1 MLP over [x, y, z, sin_month, cos_month] metadata.
 
     Predicts scaled AQI (pm25 / 100.0). Exposes `forward_features` (32-D)
-    for reuse in Step 3+ multimodal fusion (`SPEC.md` Sec. 3.4).
+    for reuse in multimodal fusion (`SPEC.md` Sec. 3.4).
     """
 
     def __init__(

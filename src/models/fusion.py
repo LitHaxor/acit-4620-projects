@@ -1,7 +1,7 @@
-"""Step 5a Multimodal Fusion Models (Image + Metadata) with Modality Dropout & Vision Aux Loss.
+"""Multimodal Fusion Models (Image + Metadata) with Modality Dropout & Vision Aux Loss.
 
 Implements `PFRMLFusionModel` (`fusion_r1_mobilenetv3_s` and `fusion_full_mobilenetv3_s`)
-per `docs/SPEC.md` Sec. 3.4 and Step 5a specification:
+per `docs/SPEC.md` Sec. 3.4:
 - Image branch: `BackboneTapWrapper` (`mobilenetv3_s`, pretrained) + `PFRMLHead`
   (DCM + Light Transformer + optional `AttentionPooling` & `PhysicsPriorGate`) -> `chi` (`[B, 224]`).
 - Metadata branch: Existing `MetadataMLP` (`5 -> 64 -> 32`) -> `m` (`[B, 32]`).

@@ -1,4 +1,4 @@
-"""Multitask loss wrapper for PFRML with Toggle #3 long-tail class weighting and Step 5 vision aux loss.
+"""Multitask loss wrapper for PFRML with Toggle #3 long-tail class weighting and multimodal vision aux loss.
 
 Imports `HybridMultitaskLoss`, `RegressionLoss`, and `compute_class_weights`
 from `src.losses` without modifying `src/losses.py`.
@@ -15,7 +15,7 @@ Citations:
   Paper 14 (Byler et al., WACVW 2025, Sec. 4.1), Paper 6 (Mohan et al.,
   IEEE RAIT 2025, WERCS) — dampened inverse-frequency weights w_k ~ N_k^{-gamma}
   computed strictly inside each training fold.
-- Step 5 Multimodal Fusion (`aux_loss_weight = 0.5`): Auxiliary vision-only
+- Multimodal Fusion (`aux_loss_weight = 0.5`): Auxiliary vision-only
   regression loss on `chi` alone (`L_total = L_main + aux_loss_weight * L_aux`),
   whose gradient flows into the image backbone and never into `MetadataMLP`.
 """

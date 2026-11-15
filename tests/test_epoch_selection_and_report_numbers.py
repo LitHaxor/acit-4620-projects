@@ -1,21 +1,21 @@
-"""Unit tests for Step 5c: choose_epochs, run_queue_step5c decision rule & specs, compare_final >25km & fusion, and build_report_numbers."""
+"""Unit tests for fusion epoch selection, final queue decision rule & specs, >25km comparison, and report numbers builder."""
 
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scripts.build_report_numbers import build_report_numbers
-from scripts.choose_epochs import (
+from scripts.analysis.build_report_numbers import build_report_numbers
+from scripts.analysis.compare_final_models import generate_final_comparison
+from scripts.analysis.select_fusion_epochs import (
     compute_epoch_stats,
     load_fold_epoch_maes,
     read_chosen_n_from_markdown,
 )
-from scripts.compare_final import generate_final_comparison
-from scripts.run_queue_step5c import (
+from scripts.experiments.queue_fusion_final import (
     DECISION_THRESHOLD_MAE,
     FALLBACK_FINAL_EPOCHS,
-    build_step5c_item1_spec,
-    build_step5c_item3_spec,
+    build_fusion_epn_cv_spec,
+    build_fusion_final_spec,
     compute_item1_last_epoch_mean_mae,
     evaluate_decision_rule,
 )
@@ -52,29 +52,29 @@ def test_choose_epochs_cma3_and_min_epoch_floor() -> None:
     real_per_ep = load_fold_epoch_maes(Path("outputs/curves"))
     _, real_n = compute_epoch_stats(real_per_ep, min_epoch=6)
     assert real_n == 7
-    assert read_chosen_n_from_markdown(Path("outputs/results/step5c_epochs.md")) == 7
+    assert read_chosen_n_from_markdown(Path("outputs/results/fusion_epoch_selection.md")) == 7
 
 
-def test_step5c_decision_rule_and_specs(tmp_path: Path) -> None:
-    """Verify Step 5c Item 1/2/3 specs and the exact decision rule (< 46.95 -> N, else 30)."""
-    spec1 = build_step5c_item1_spec(chosen_n=7, smoke=False)
+def test_fusion_final_decision_rule_and_specs(tmp_path: Path) -> None:
+    """Verify final fusion queue Item 1/2/3 specs and the exact decision rule (< 46.95 -> N, else 30)."""
+    spec1 = build_fusion_epn_cv_spec(chosen_n=7, smoke=False)
     assert spec1.experiment_id == "E5_fusion_r1_p00_ep7"
     assert spec1.model == "fusion_r1_mobilenetv3_s"
-    assert spec1.config == "configs/fusion_r1.yaml"
+    assert spec1.config == "configs/fusion_regression_only_neck.yaml"
     assert spec1.group_mode == "spatial_cluster"
     assert spec1.folds == (0, 1, 2, 3, 4)
     assert spec1.epochs == 7
     assert abs(spec1.lr - 1e-3) < 1e-12
     assert spec1.modality_dropout == 0.0
 
-    spec3 = build_step5c_item3_spec(e_final=7, smoke=False)
+    spec3 = build_fusion_final_spec(e_final=7, smoke=False)
     assert spec3.is_final and spec3.final_name == "F_FUSION_R1"
     assert spec3.model == "fusion_r1_mobilenetv3_s"
-    assert spec3.config == "configs/fusion_r1.yaml"
+    assert spec3.config == "configs/fusion_regression_only_neck.yaml"
     assert spec3.modality_dropout == 0.0
     assert spec3.epochs == 7
 
-    step5_csv = tmp_path / "step5_results.csv"
+    fusion_csv = tmp_path / "fusion_cv_results.csv"
     # Case A: 5-fold mean MAE = 46.20 < 46.95 -> E_final = 7
     rows_below = [
         {
@@ -86,8 +86,8 @@ def test_step5c_decision_rule_and_specs(tmp_path: Path) -> None:
         }
         for k in range(5)
     ]
-    pd.DataFrame(rows_below).to_csv(step5_csv, index=False)
-    mean_mae_a, _, _ = compute_item1_last_epoch_mean_mae(spec1, step5_csv)
+    pd.DataFrame(rows_below).to_csv(fusion_csv, index=False)
+    mean_mae_a, _, _ = compute_item1_last_epoch_mean_mae(spec1, fusion_csv)
     e_final_a, _ = evaluate_decision_rule(
         mean_mae=mean_mae_a,
         chosen_n=7,
@@ -108,8 +108,8 @@ def test_step5c_decision_rule_and_specs(tmp_path: Path) -> None:
         }
         for k in range(5)
     ]
-    pd.DataFrame(rows_above).to_csv(step5_csv, index=False)
-    mean_mae_b, _, _ = compute_item1_last_epoch_mean_mae(spec1, step5_csv)
+    pd.DataFrame(rows_above).to_csv(fusion_csv, index=False)
+    mean_mae_b, _, _ = compute_item1_last_epoch_mean_mae(spec1, fusion_csv)
     e_final_b, _ = evaluate_decision_rule(
         mean_mae=mean_mae_b,
         chosen_n=7,
@@ -122,7 +122,7 @@ def test_step5c_decision_rule_and_specs(tmp_path: Path) -> None:
 
 def test_compare_final_includes_fusion_and_meta_off(tmp_path: Path) -> None:
     """Verify compare_final includes F_FUSION_R1 and F_FUSION_R1_meta_off when present, plus >25km paired differences."""
-    final_csv = tmp_path / "final_results.csv"
+    final_csv = tmp_path / "final_test_results.csv"
     rows = []
     for name, mae in [("F_E2", 38.0), ("F_PFRML_full", 39.5), ("F_FUSION_R1", 37.2), ("F_FUSION_R1_meta_off", 38.4)]:
         for split, n_samp, n_stat in [("test", 4, 2), ("test_gt25km", 2, 1)]:
@@ -130,7 +130,7 @@ def test_compare_final_includes_fusion_and_meta_off(tmp_path: Path) -> None:
                 {
                     "name": name,
                     "model": "fusion_r1_mobilenetv3_s" if "FUSION" in name else "mobilenetv3_s_pretrained",
-                    "config": "configs/fusion_r1.yaml",
+                    "config": "configs/fusion_regression_only_neck.yaml",
                     "seed": 42,
                     "epochs": 7,
                     "eval_split": split,
@@ -170,7 +170,7 @@ def test_compare_final_includes_fusion_and_meta_off(tmp_path: Path) -> None:
         final_csv=final_csv,
         predictions_dir=preds_dir,
         outputs_dir=tmp_path,
-        step2_csv=tmp_path / "no_step2.csv",
+        baselines_csv=tmp_path / "no_baselines.csv",
         output_md=out_md,
         n_boot=50,
         seed=42,

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Resumable Step 5 queue runner (`scripts/run_queue_step5.py`).
+"""Resumable fusion CV and initial final-evaluation queue runner (`scripts/experiments/queue_fusion_cv.py`).
 
-Design mirrors `scripts/run_queue_step4.py`:
+Design mirrors `scripts/experiments/queue_pfrml_ablations.py`:
 - One isolated subprocess per `(experiment, fold)` (or per final full-train run).
-- Skips rows already present in `outputs/results/step5_results.csv` (and
-  `outputs/results/final_results.csv` for items 5 & 6).
+- Skips rows already present in `outputs/results/fusion_cv_results.csv` (and
+  `outputs/results/final_test_results.csv` for items 5 & 6).
 - Crashes are logged and the queue continues.
-- Logs exclusively to `outputs/logs/queue_step5.log` (or `outputs/smoke/logs/queue_step5.log`
+- Logs exclusively to `outputs/logs/queue_fusion_cv.log` (or `outputs/smoke/logs/queue_fusion_cv.log`
   in `--smoke` mode).
 - Atomic CSV appends via `evaluate.append_result_row` and `cv_mean`/`cv_std` summary rows
   (including `<experiment_id>_meta_off` summary rows for fusion runs).
@@ -15,11 +15,11 @@ Design mirrors `scripts/run_queue_step4.py`:
 - `--pilot`: runs item 1 (`E5_fusion_r1_p03`) fold 0 only and prints MAE for both the
   normal row (`E5_fusion_r1_p03`) and the metadata-off row (`E5_fusion_r1_p03_meta_off`).
 - `--smoke`: runs 1 epoch on 64 samples under `outputs/smoke/`, passing `--smoke-eval-on-val`
-  to `scripts/final_train_eval.py` so smoke runs never touch the test set.
+  to `scripts/final_evaluation.py` so smoke runs never touch the test set.
 - Time guard before item 7 (`E5_mdnet_t_pfrml_lr2e-4_f0`): projects total queue hours from
   measured `sec/epoch` (timing ~20 real training batches per model type when not already
   recorded); if total projected queue time exceeds `8.0 h`, skips item 7 and writes
-  `outputs/QUEUE_STOPPED_STEP5.txt` explaining why.
+  `outputs/QUEUE_STOPPED_FUSION.txt` explaining why.
 """
 
 from __future__ import annotations
@@ -41,12 +41,12 @@ from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 import torch
 from torch.utils.data import DataLoader
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evaluate import append_result_row, build_result_row, resolve_device  # noqa: E402
-from scripts.final_train_eval import name_exists_in_final_csv  # noqa: E402
+from scripts.final_evaluation import name_exists_in_final_csv  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.data.cleaning import dedupe_split_by_median_aqi  # noqa: E402
 from src.data.dataset import PM25Dataset  # noqa: E402
@@ -64,8 +64,8 @@ BATCHES_FULL_TRAIN_BS32 = 256     # 8,176 train images / 32
 
 
 @dataclass(frozen=True)
-class Step5RunSpec:
-    """Specification for an item in the Step 5 queue."""
+class FusionQueueRunSpec:
+    """Specification for an item in the fusion CV queue."""
 
     order_idx: int
     rung: str
@@ -86,64 +86,64 @@ class Step5RunSpec:
         return self.model in FUSION_MODEL_SPECS
 
 
-def build_step5_specs(smoke: bool = False) -> List[Step5RunSpec]:
-    """Return the 7 Step 5 queue items in exact specified order."""
+def build_fusion_cv_specs(smoke: bool = False) -> List[FusionQueueRunSpec]:
+    """Return the 7 fusion CV / initial final queue items in exact specified order."""
 
-    def ep(n: int) -> int:\
+    def ep(n: int) -> int:
         return 1 if smoke else n
 
     cv_folds: Tuple[int, ...] = (0, 1) if smoke else (0, 1, 2, 3, 4)
 
     return [
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=1,
             rung="1_E5_fusion_r1_p03",
             experiment_id="E5_fusion_r1_p03",
             model="fusion_r1_mobilenetv3_s",
-            config="configs/fusion_r1.yaml",
+            config="configs/fusion_regression_only_neck.yaml",
             group_mode="spatial_cluster",
             folds=cv_folds,
             lr=1e-3,
             epochs=ep(30),
             modality_dropout=0.3,
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=2,
             rung="2_E5_fusion_full_p03",
             experiment_id="E5_fusion_full_p03",
             model="fusion_full_mobilenetv3_s",
-            config="configs/fusion_full.yaml",
+            config="configs/fusion_pfrml_full.yaml",
             group_mode="spatial_cluster",
             folds=cv_folds,
             lr=1e-3,
             epochs=ep(30),
             modality_dropout=0.3,
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=3,
             rung="3_E5_fusion_r1_p00",
             experiment_id="E5_fusion_r1_p00",
             model="fusion_r1_mobilenetv3_s",
-            config="configs/fusion_r1.yaml",
+            config="configs/fusion_regression_only_neck.yaml",
             group_mode="spatial_cluster",
             folds=cv_folds,
             lr=1e-3,
             epochs=ep(30),
             modality_dropout=0.0,
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=4,
             rung="4_E5_mobilenetv3_s_reg_chi",
             experiment_id="E5_mobilenetv3_s_reg_chi",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_reg_chi.yaml",
+            config="configs/pfrml_eq5_regression.yaml",
             group_mode="station",
             folds=cv_folds,
             lr=1e-3,
             epochs=ep(30),
             modality_dropout=None,
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=5,
             rung="5_FINAL_E2",
             experiment_id="F_E2",
@@ -156,12 +156,12 @@ def build_step5_specs(smoke: bool = False) -> List[Step5RunSpec]:
             is_final=True,
             final_name="F_E2",
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=6,
             rung="6_FINAL_PFRML",
             experiment_id="F_PFRML_full",
             model="pfrml_mobilenetv3_s",
-            config="configs/pfrml_full.yaml",
+            config="configs/pfrml_all_toggles.yaml",
             group_mode="full_train",
             folds=(),
             lr=1e-3,
@@ -169,12 +169,12 @@ def build_step5_specs(smoke: bool = False) -> List[Step5RunSpec]:
             is_final=True,
             final_name="F_PFRML_full",
         ),
-        Step5RunSpec(
+        FusionQueueRunSpec(
             order_idx=7,
             rung="7_E5_mdnet_t_pfrml_lr2e-4_f0",
             experiment_id="E5_mdnet_t_pfrml_lr2e-4_f0",
             model="pfrml_mdnet_t",
-            config="configs/pfrml_baseline.yaml",
+            config="configs/pfrml_prototype_multitask.yaml",
             group_mode="station",
             folds=(0,),
             lr=2e-4,
@@ -372,11 +372,11 @@ def benchmark_real_batches_sec_per_epoch(
 
 
 def estimate_spec_sec_per_epoch(
-    spec: Step5RunSpec,
-    step5_rows: Sequence[Dict[str, str]],
+    spec: FusionQueueRunSpec,
+    fusion_rows: Sequence[Dict[str, str]],
     final_rows: Sequence[Dict[str, str]],
-    step4_rows: Sequence[Dict[str, str]],
-    step3_rows: Sequence[Dict[str, str]],
+    pfrml_rows: Sequence[Dict[str, str]],
+    image_rows: Sequence[Dict[str, str]],
     outputs_dir: Path,
     bench_cache: Dict[Tuple[str, str, bool], float],
     smoke: bool = False,
@@ -394,7 +394,7 @@ def estimate_spec_sec_per_epoch(
 
     exact_times = [
         t
-        for r in step5_rows
+        for r in fusion_rows
         if r.get("experiment_id") == spec.experiment_id
         and r.get("fold") not in {"cv_mean", "cv_std"}
         and (t := extract_sec_per_epoch_from_row(r)) is not None
@@ -413,8 +413,8 @@ def estimate_spec_sec_per_epoch(
             if c_times:
                 return sum(c_times) / len(c_times)
 
-    # Check same model in step5_rows, step4_rows, step3_rows
-    for rows in (step5_rows, step4_rows, step3_rows):
+    # Check same model in fusion_rows, pfrml_rows, image_rows
+    for rows in (fusion_rows, pfrml_rows, image_rows):
         m_times = [
             t
             for r in rows
@@ -440,12 +440,12 @@ def estimate_spec_sec_per_epoch(
     return bench_cache[cache_key]
 
 
-def project_total_queue_hours_step5(
-    all_specs: Sequence[Step5RunSpec],
-    step5_rows: Sequence[Dict[str, str]],
+def project_fusion_cv_hours(
+    all_specs: Sequence[FusionQueueRunSpec],
+    fusion_rows: Sequence[Dict[str, str]],
     final_rows: Sequence[Dict[str, str]],
-    step4_rows: Sequence[Dict[str, str]],
-    step3_rows: Sequence[Dict[str, str]],
+    pfrml_rows: Sequence[Dict[str, str]],
+    image_rows: Sequence[Dict[str, str]],
     indexed_val: Dict[Tuple[str, str, str], Dict[str, str]],
     outputs_dir: Path,
     smoke: bool = False,
@@ -472,10 +472,10 @@ def project_total_queue_hours_step5(
         else:
             sec_per_ep = estimate_spec_sec_per_epoch(
                 spec=spec,
-                step5_rows=step5_rows,
+                fusion_rows=fusion_rows,
                 final_rows=final_rows,
-                step4_rows=step4_rows,
-                step3_rows=step3_rows,
+                pfrml_rows=pfrml_rows,
+                image_rows=image_rows,
                 outputs_dir=outputs_dir,
                 bench_cache=bench_cache,
                 smoke=smoke,
@@ -535,7 +535,7 @@ def project_total_queue_hours_step5(
 
 def _run_train_subprocess(
     *,
-    spec: Step5RunSpec,
+    spec: FusionQueueRunSpec,
     fold: int,
     results_csv: Path,
     outputs_dir: Path,
@@ -604,7 +604,7 @@ def _run_train_subprocess(
 
 def _run_final_subprocess(
     *,
-    spec: Step5RunSpec,
+    spec: FusionQueueRunSpec,
     final_csv: Path,
     outputs_dir: Path,
     smoke: bool,
@@ -613,7 +613,7 @@ def _run_final_subprocess(
     assert spec.final_name is not None
     cmd: List[str] = [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "final_train_eval.py"),
+        str(PROJECT_ROOT / "scripts" / "final_evaluation.py"),
         "--name",
         spec.final_name,
         "--model",
@@ -750,7 +750,7 @@ def _maybe_append_cv_summary_for_exp(
 
 
 def _maybe_append_cv_summary(
-    spec: Step5RunSpec,
+    spec: FusionQueueRunSpec,
     results_csv: Path,
     log_f: TextIO,
 ) -> None:
@@ -777,7 +777,7 @@ def _maybe_append_cv_summary(
         )
 
 
-def run_queue_step5(
+def run_fusion_cv_queue(
     *,
     smoke: bool = False,
     pilot: bool = False,
@@ -790,29 +790,29 @@ def run_queue_step5(
         outputs_dir = PROJECT_ROOT / ("outputs/smoke" if smoke else "outputs")
     if results_csv is None:
         results_csv = (
-            outputs_dir / "step5_results.csv"
+            outputs_dir / "fusion_cv_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/step5_results.csv"
+            else PROJECT_ROOT / "outputs/results/fusion_cv_results.csv"
         )
     if final_csv is None:
         final_csv = (
-            outputs_dir / "final_results.csv"
+            outputs_dir / "final_test_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/final_results.csv"
+            else PROJECT_ROOT / "outputs/results/final_test_results.csv"
         )
-    log_path = outputs_dir / "logs" / "queue_step5.log"
+    log_path = outputs_dir / "logs" / "queue_fusion_cv.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    specs = build_step5_specs(smoke=smoke)
+    specs = build_fusion_cv_specs(smoke=smoke)
 
-    step4_csv = PROJECT_ROOT / "outputs/results/step4_results.csv"
-    step3_csv = PROJECT_ROOT / "outputs/results/step3_results.csv"
-    step4_rows = load_results_rows(step4_csv)
-    step3_rows = load_results_rows(step3_csv)
+    pfrml_csv = PROJECT_ROOT / "outputs/results/pfrml_ablation_cv_results.csv"
+    image_csv = PROJECT_ROOT / "outputs/results/image_models_cv_results.csv"
+    pfrml_rows = load_results_rows(pfrml_csv)
+    image_rows = load_results_rows(image_csv)
 
     with log_path.open("a", encoding="utf-8") as log_f:
         log_line(
             log_f,
-            f"=== STEP 5 QUEUE START (smoke={smoke}, pilot={pilot}, "
+            f"=== FUSION CV QUEUE START (smoke={smoke}, pilot={pilot}, "
             f"results_csv={results_csv}, final_csv={final_csv}, outputs_dir={outputs_dir}) ===",
         )
 
@@ -848,26 +848,26 @@ def run_queue_step5(
             )
             log_line(log_f, msg)
             print(msg, flush=True)
-            log_line(log_f, "=== STEP 5 PILOT COMPLETE ===")
+            log_line(log_f, "=== FUSION CV PILOT COMPLETE ===")
             return 0
 
         for spec in specs:
             if spec.is_guarded_item7:
-                step5_rows = load_results_rows(results_csv)
+                fusion_rows = load_results_rows(results_csv)
                 final_rows = load_results_rows(final_csv)
-                indexed = index_val_rows(step5_rows)
+                indexed = index_val_rows(fusion_rows)
                 rem_folds = [
                     k
                     for k in spec.folds
                     if (spec.experiment_id, spec.group_mode, str(k)) not in indexed
                 ]
                 if rem_folds:
-                    total_proj_h, item7_h, breakdown = project_total_queue_hours_step5(
+                    total_proj_h, item7_h, breakdown = project_fusion_cv_hours(
                         all_specs=specs,
-                        step5_rows=step5_rows,
+                        fusion_rows=fusion_rows,
                         final_rows=final_rows,
-                        step4_rows=step4_rows,
-                        step3_rows=step3_rows,
+                        pfrml_rows=pfrml_rows,
+                        image_rows=image_rows,
                         indexed_val=indexed,
                         outputs_dir=outputs_dir,
                         smoke=smoke,
@@ -879,12 +879,12 @@ def run_queue_step5(
                         f"(limit={max_hours:.2f}h)",
                     )
                     if total_proj_h > float(max_hours):
-                        stop_path = outputs_dir / "QUEUE_STOPPED_STEP5.txt"
+                        stop_path = outputs_dir / "QUEUE_STOPPED_FUSION.txt"
                         lines = [
-                            f"Step 5 queue time guard triggered at {_ts()}",
+                            f"Fusion CV queue time guard triggered at {_ts()}",
                             f"Skipped run: {spec.rung} ({spec.experiment_id}, model={spec.model}, "
                             f"config={spec.config}, lr={spec.lr:g}, epochs={spec.epochs}, folds={rem_folds})",
-                            f"Reason: Total projected Step 5 queue time ({total_proj_h:.2f} h, including "
+                            f"Reason: Total projected fusion CV queue time ({total_proj_h:.2f} h, including "
                             f"{item7_h:.2f} h for {spec.experiment_id}) exceeds the {max_hours:.2f} h limit.",
                             "",
                             "Per-item runtime breakdown:",
@@ -954,13 +954,13 @@ def run_queue_step5(
 
             _maybe_append_cv_summary(spec, results_csv, log_f)
 
-        log_line(log_f, "=== STEP 5 QUEUE COMPLETE ===")
+        log_line(log_f, "=== FUSION CV QUEUE COMPLETE ===")
     return 0
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Resumable Step 5 fusion, reg_chi, and final test evaluation queue."
+        description="Resumable fusion CV, Eq. 5 regression, and initial final test evaluation queue."
     )
     parser.add_argument(
         "--smoke",
@@ -989,18 +989,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     if args.project_only:
-        specs = build_step5_specs(smoke=False)
+        specs = build_fusion_cv_specs(smoke=False)
         outputs_dir = PROJECT_ROOT / "outputs"
-        s5_rows = load_results_rows(outputs_dir / "results" / "step5_results.csv")
-        fin_rows = load_results_rows(outputs_dir / "results" / "final_results.csv")
-        s4_rows = load_results_rows(outputs_dir / "results" / "step4_results.csv")
-        s3_rows = load_results_rows(outputs_dir / "results" / "step3_results.csv")
-        total_h, item7_h, breakdown = project_total_queue_hours_step5(
+        s5_rows = load_results_rows(outputs_dir / "results" / "fusion_cv_results.csv")
+        fin_rows = load_results_rows(outputs_dir / "results" / "final_test_results.csv")
+        s4_rows = load_results_rows(outputs_dir / "results" / "pfrml_ablation_cv_results.csv")
+        s3_rows = load_results_rows(outputs_dir / "results" / "image_models_cv_results.csv")
+        total_h, item7_h, breakdown = project_fusion_cv_hours(
             all_specs=specs,
-            step5_rows=s5_rows,
+            fusion_rows=s5_rows,
             final_rows=fin_rows,
-            step4_rows=s4_rows,
-            step3_rows=s3_rows,
+            pfrml_rows=s4_rows,
+            image_rows=s3_rows,
             indexed_val=index_val_rows(s5_rows),
             outputs_dir=outputs_dir,
             smoke=False,
@@ -1016,7 +1016,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"TOTAL PROJECTED HOURS: {total_h:.2f} h (item 7 = {item7_h:.2f} h, guard = {args.max_hours:.2f} h)")
         return 0
 
-    return run_queue_step5(
+    return run_fusion_cv_queue(
         smoke=bool(args.smoke),
         pilot=bool(args.pilot),
         max_hours=float(args.max_hours),

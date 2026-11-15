@@ -6,7 +6,7 @@ Implements:
   `(k=3, d=2, p=2)`, `(k=2, d=2, p=1)`, `(k=1, d=1, p=0)`, summed,
   followed by `GELU`, pointwise `1x1` conv (`C -> C`), `LayerNorm`, and residual.
 - `MDNet`: 4-stage hierarchical backbone (`dims=[96, 192, 384, 768]`,
-  `depths=[3, 3, 9, 3]` for `MDNet-T`) exposing `forward_stages(x)` for Step 4
+  `depths=[3, 3, 9, 3]` for `MDNet-T`) exposing `forward_stages(x)` for PFRML
   DCM fusion and supporting either `regression` (1 output, AQI/100) or
   `classification` (6-class logits).
 - `MobileNetV3MDNeck` (`E3b`): author's own adaptation combining a pretrained

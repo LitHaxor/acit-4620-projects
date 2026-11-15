@@ -1,4 +1,4 @@
-"""Configuration dataclass and YAML builder for PFRML Step 4 & Step 5 configs.
+"""Configuration dataclass and YAML builder for PFRML and Fusion configs.
 
 Re-exports `PFRMLHeadConfig` from `src.config` and provides `PFRMLFullConfig`,
 `load_pfrml_config`, and `build_pfrml_from_config`.

@@ -1,4 +1,4 @@
-"""Unit tests for Step 2 metrics, losses, haze features, and baseline models."""
+"""Unit tests for evaluation metrics, losses, haze features, and baseline models."""
 
 import math
 import numpy as np
@@ -134,7 +134,7 @@ def test_haze_features_physical_properties_and_gradients() -> None:
     assert priors_hazy[0, 2] < priors_clear[0, 2]
     assert priors_hazy[0, 3] > priors_clear[0, 3]
 
-    # Differentiability check for Step 4 in-model reuse
+    # Differentiability check for in-model reuse
     (feats_clear.sum() + priors_clear.sum()).backward()
     assert clear_req.grad is not None
     assert torch.isfinite(clear_req.grad).all()

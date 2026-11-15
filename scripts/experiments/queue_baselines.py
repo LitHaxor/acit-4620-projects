@@ -5,7 +5,7 @@ Executes each training run in an isolated subprocess, checkpoints every epoch
 for crash/interrupt resumption, skips any (experiment_id, fold) already present
 in the results CSV, enforces the deterministic Stage 2 selection rule, guards
 Stage 3 against >12h projected runtime, and logs exclusively to
-`outputs/logs/queue.log` (or `outputs/smoke/logs/queue.log` in `--smoke` mode).
+`outputs/logs/queue_baselines.log` (or `outputs/smoke/logs/queue_baselines.log` in `--smoke` mode).
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ import re
 import subprocess
 import sys
 import tempfile
-from typing import Dict, Iterable, List, Optional, Sequence, TextIO, Tuple
+from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -60,7 +60,7 @@ class SelectionDecision:
     reason: str
 
 
-# Earlier Step 3 defaults (lr=1e-3, 30 epochs) already evaluated on fold 0
+# Initial defaults (lr=1e-3, 30 epochs) already evaluated on fold 0
 EARLIER_DEFAULTS: Dict[str, RunSpec] = {
     "mobilenetv3_s_pretrained": RunSpec(
         family="mobilenetv3_s_pretrained",
@@ -537,11 +537,11 @@ def run_queue(
         outputs_dir = PROJECT_ROOT / ("outputs/smoke" if smoke else "outputs")
     if results_csv is None:
         results_csv = (
-            outputs_dir / "results.csv"
+            outputs_dir / "image_models_cv_results.csv"
             if smoke
-            else PROJECT_ROOT / "outputs/results/step3_results.csv"
+            else PROJECT_ROOT / "outputs/results/image_models_cv_results.csv"
         )
-    log_path = outputs_dir / "logs" / "queue.log"
+    log_path = outputs_dir / "logs" / "queue_baselines.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cv_folds = [0, 1] if smoke else [0, 1, 2, 3, 4]
     stage1_specs = build_stage1_specs(smoke=smoke)
@@ -680,11 +680,49 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_MAX_HOURS,
         help="Stop before Stage 3 if projected total hours exceed this threshold (default: 12.0).",
     )
+    parser.add_argument(
+        "--project-only",
+        action="store_true",
+        help="Print the queue plan and projected runtime breakdown without training.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+    if args.project_only:
+        outputs_dir = PROJECT_ROOT / "outputs"
+        results_csv = outputs_dir / "results" / "image_models_cv_results.csv"
+        rows = load_results_rows(results_csv)
+        indexed = index_val_rows(rows)
+        stage1_specs = build_stage1_specs(smoke=False)
+        decisions = select_stage2_configs(stage1_specs, indexed)
+        cv_folds = [0, 1, 2, 3, 4]
+        projected_hours, breakdown = project_stage3_hours(
+            decisions=decisions,
+            cv_folds=cv_folds,
+            rows=rows,
+            indexed_rows=indexed,
+            outputs_dir=outputs_dir,
+        )
+        print("Stage 1 fold-0 candidate plan:")
+        for spec in stage1_specs:
+            status = "done" if (spec.experiment_id, "0") in indexed else "pending"
+            print(
+                f"  - {spec.experiment_id} (model={spec.model}, lr={spec.lr:g}, ep={spec.epochs}) [{status}]"
+            )
+        print("Stage 3 5-fold CV selected plan:")
+        for item in breakdown:
+            sec_ep = item["sec_per_ep"]
+            sec_str = f"{sec_ep:.2f} s/ep" if sec_ep is not None else "unknown s/ep"
+            print(
+                f"  - {item['experiment_id']}: {sec_str}, "
+                f"remaining_folds={item['remaining_folds']}, "
+                f"remaining_epochs={item['remaining_epochs']}, "
+                f"est={item['projected_hours']:.2f} h"
+            )
+        print(f"TOTAL PROJECTED HOURS: {projected_hours:.2f} h (guard = {args.max_hours:.2f} h)")
+        return 0
     return run_queue(smoke=bool(args.smoke), max_hours=float(args.max_hours))
 
 

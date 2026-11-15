@@ -7,15 +7,13 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 from PIL import Image
-import pytest
 import torch
 
 from evaluate import CSV_FIELDNAMES, append_result_row, build_result_row
-from scripts.run_queue import (
+from scripts.experiments.queue_baselines import (
     EARLIER_DEFAULTS,
     build_stage1_specs,
     index_val_rows,
-    project_stage3_hours,
     run_queue,
     select_stage2_configs,
 )
@@ -211,7 +209,7 @@ def test_queue_12h_guard_writes_stop_file(tmp_path: Path) -> None:
     assert stop_file.exists()
     content = stop_file.read_text(encoding="utf-8")
     assert "Projected Stage 3 total hours" in content
-    log_file = outputs_dir / "logs" / "queue.log"
+    log_file = outputs_dir / "logs" / "queue_baselines.log"
     assert log_file.exists()
     assert "STOPPED: Projected hours" in log_file.read_text(encoding="utf-8")
 
