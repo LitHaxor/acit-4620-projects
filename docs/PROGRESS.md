@@ -253,36 +253,59 @@ Full 10-metric tables and paired MAE comparisons are saved in [`outputs/results/
 * **Part 0d (Default diff vs `git HEAD`):** All Step 4 defaults are unchanged; only new Step 5 fields (`pfrml.reg_input="chi_proto"`, `pfrml.modality_dropout=0.3`, `pfrml.aux_loss_weight=0.5`, and `PFRMLMultitaskLoss.aux_loss_weight=0.0`) were added.
 
 ### Part 1 & Part 2: Scripts Built & Tested
-* [`scripts/run_queue_step5.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/run_queue_step5.py): Resumable Step 5 queue runner executing one subprocess per `(experiment, fold)` or final-eval item, skipping completed rows in `outputs/results/step5_results.csv` (and `outputs/results/
-`), logging crashes and continuing, writing atomic CSV rows and `cv_mean`/`cv_std` summaries (including `<experiment_id>_meta_off` for fusion models), logging to `outputs/logs/queue_step5.log`, supporting `--smoke`, `--pilot` (runs item 1 fold 0 only and prints both normal and `_meta_off` MAE), and `--project-only`, and enforcing an `8.0 h` projected runtime guard before item 7 (`outputs/QUEUE_STOPPED_STEP5.txt`).
+* [`scripts/run_queue_step5.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/run_queue_step5.py): Resumable Step 5 queue runner executing one subprocess per `(experiment, fold)` or final-eval item, skipping completed rows in `outputs/results/step5_results.csv` (and `outputs/results/final_results.csv`), logging crashes and continuing, writing atomic CSV rows and `cv_mean`/`cv_std` summaries (including `<experiment_id>_meta_off` for fusion models), logging to `outputs/logs/queue_step5.log`, supporting `--smoke`, `--pilot` (runs item 1 fold 0 only and prints both normal and `_meta_off` MAE), and `--project-only`, and enforcing an `8.0 h` projected runtime guard before item 7 (`outputs/QUEUE_STOPPED_STEP5.txt`).
 * [`scripts/final_train_eval.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/final_train_eval.py): The **ONLY** script that reads `datasets/test/metadata.csv` for neural models. Trains on all `8,176` cleaned training images for fixed `30` epochs, evaluates the **LAST** epoch once per `--name` (refuses with exit code `1` if `--name` already exists in `outputs/results/final_results.csv`), reports all 10 metrics plus a 1,000-resample station-level bootstrap `95% CI` for MAE on both `test` (`n=2,920`) and `test_gt25km` (`n=717`, reusing `compute_test_distance_mask`), writes `<name>_meta_off` rows for fusion models, saves per-image predictions to `outputs/predictions/<name>.csv` (`image_id, station_id, y_true, y_pred`) and checkpoints to `outputs/checkpoints/<name>/full_train/model.pt`, and supports `--smoke-eval-on-val` so smoke tests never touch test labels.
 * [`scripts/compare_final.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/compare_final.py): Generates `outputs/results/final_comparison.md` with full (`n=2,920`) and `>25 km` (`n=717`) 10-metric + `95% CI` tables and paired 1,000-resample station-bootstrap MAE differences (`95% CI`) between every pair of final models. Loads `E1_metadata_mlp` from its existing Step 2 `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz` without retraining or touching test data.
 * [`tests/test_step5b.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/tests/test_step5b.py): 3 new unit tests covering Step 5 queue specs, exact curve filename matching, and station-bootstrap CI / paired differences (**`51 passed in 35.94s`** across the full test suite).
 
-### Planned Step 5 Queue & Projected Runtime (from `run_queue_step5.py --project-only`)
-1. `E5_fusion_r1_p03` (`fusion_r1_mobilenetv3_s`, `configs/fusion_r1.yaml`, `spatial_cluster`, 5 folds, `--modality-dropout 0.3`): `52.02 s/ep` $\to$ **`26.01 min/run`** (`130.04 min` / `2.17 h` total).
-2. `E5_fusion_full_p03` (`fusion_full_mobilenetv3_s`, `configs/fusion_full.yaml`, `spatial_cluster`, 5 folds, `--modality-dropout 0.3`): `54.48 s/ep` $\to$ **`27.24 min/run`** (`136.20 min` / `2.27 h` total).
-3. `E5_fusion_r1_p00` (`fusion_r1_mobilenetv3_s`, `configs/fusion_r1.yaml`, `spatial_cluster`, 5 folds, `--modality-dropout 0.0`): `52.02 s/ep` $\to$ **`26.01 min/run`** (`130.04 min` / `2.17 h` total).
-4. `E5_mobilenetv3_s_reg_chi` (`pfrml_mobilenetv3_s`, `configs/pfrml_reg_chi.yaml`, `station`, 5 folds): `49.81 s/ep` $\to$ **`24.90 min/run`** (`124.52 min` / `2.08 h` total).
-5. `FINAL_E2` (`F_E2`, `mobilenetv3_s_pretrained`, `configs/default.yaml`, `full_train`, 1 run): `46.62 s/ep` $\to$ **`23.31 min/run`** (`0.39 h`).
-6. `FINAL_PFRML` (`F_PFRML_full`, `pfrml_mobilenetv3_s`, `configs/pfrml_full.yaml`, `full_train`, 1 run): `63.16 s/ep` $\to$ **`31.58 min/run`** (`0.53 h`).
-7. `E5_mdnet_t_pfrml_lr2e-4_f0` (`pfrml_mdnet_t`, `configs/pfrml_baseline.yaml`, `station`, fold 0 only, `--lr 2e-4`, 30 epochs): `92.87 s/ep` $\to$ **`46.43 min/run`** (`0.77 h`).
-* **Projected Total Hours:** **`10.37 h`** across all 7 items (`9.60 h` for items 1–6; because `10.37 h > 8.00 h`, the `8.0 h` guard will skip item 7 and write `outputs/QUEUE_STOPPED_STEP5.txt` unless earlier runs finish faster).
+---
 
-### Commands to Run Step 5 (Not Started)
+## Step 5c: Epoch Selection, Fusion R1 Queue, `>25 km` Bootstrap Comparison & Report Numbers — COMPLETED (2026-11-15)
 
-* **Pilot run (item 1 fold 0 only, prints normal and `_meta_off` MAE):**
-  ```bash
-  env/bin/python scripts/run_queue_step5.py --pilot
-  ```
-* **Full Step 5 queue (background with `nohup caffeinate -dimsu`):**
-  ```bash
-  nohup caffeinate -dimsu env/bin/python scripts/run_queue_step5.py > outputs/logs/step5_nohup.out 2>&1 &
-  ```
-* **Generate final comparison table after queue completion:**
-  ```bash
-  env/bin/python scripts/compare_final.py
-  ```
+### Part 1: Epoch Selection from `E5_fusion_r1_p00` Curves ([`scripts/choose_epochs.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/choose_epochs.py) $\to$ [`outputs/results/step5c_epochs.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/results/step5c_epochs.md))
+* Computed per-epoch 5-fold mean validation MAE and 3-epoch centered moving average (`CMA-3`) across `outputs/curves/E5_fusion_r1_p00_spatial_cluster_fold{0..4}.csv`:
+  * Epoch 4: `48.23 +- 6.99` (`CMA-3 = 50.32`)
+  * Epoch 6: `47.05 +- 7.79` (`CMA-3 = 47.03`)
+  * **Epoch 7 (Chosen `N = 7`):** **`45.74 +- 6.78`** (**`CMA-3 = 46.26`**, lowest across all epochs $\ge 6$)
+  * Epoch 8: `45.99 +- 8.45` (`CMA-3 = 46.95`)
+  * Epoch 10: `47.74 +- 8.95` (`CMA-3 = 47.97`)
+  * Epoch 12: `45.91 +- 7.85` (`CMA-3 = 46.54`)
+  * Epoch 15: `47.68 +- 5.85` (`CMA-3 = 46.93`)
+  * Epoch 20: `48.11 +- 6.88` (`CMA-3 = 47.85`)
+  * Epoch 30: `47.45 +- 6.71` (`CMA-3 = 47.46`)
+
+### Part 2: Resumable Step 5c Queue ([`scripts/run_queue_step5c.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/run_queue_step5c.py))
+* **Item 1 (`E5_fusion_r1_p00_ep7`):** `fusion_r1_mobilenetv3_s`, `configs/fusion_r1.yaml`, `spatial_cluster`, 5 folds, `--modality-dropout 0.0`, `--lr 1e-3`, `--epochs 7` (`N=7` read from `outputs/results/step5c_epochs.md`), appending to `outputs/results/step5_results.csv`.
+* **Item 2 (Deterministic Decision Rule):** Computes 5-fold mean last-epoch MAE of `E5_fusion_r1_p00_ep7`. If `< 46.95`, sets `E_final = 7`; otherwise sets `E_final = 30`. Writes both numbers and the decision to `outputs/results/step5c_decision.md` and `outputs/logs/queue_step5c.log`.
+* **Item 3 (`F_FUSION_R1`):** Runs `scripts/final_train_eval.py --name F_FUSION_R1 --model fusion_r1_mobilenetv3_s --config configs/fusion_r1.yaml --modality-dropout 0.0 --epochs E_final --seed 42` (skips with a clear message if `F_FUSION_R1` already exists in `outputs/results/final_results.csv`).
+* **Projected Runtime (`--project-only`):** **`0.43 h`** total (`0.22 h` for Item 1 + `0.21 h` worst-case `E_final=30` for Item 3; well under the `1.00 h` guard).
+* **Smoke Verification (`--smoke`):** Verified Run 1 completes Items 1–3 under `outputs/smoke/` and Run 2 skips all items cleanly.
+
+### Part 3: Extended Final Comparison ([`scripts/compare_final.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/compare_final.py) $\to$ [`outputs/results/final_comparison.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/results/final_comparison.md))
+* Added station-bootstrap `95% CI` for `E1_metadata_mlp` on both full `test` (`40.34 [34.45, 48.31]`) and `test_gt25km` (`49.84 [40.18, 58.81]`) from `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`.
+* Added paired station-bootstrap MAE differences (`1,000` resamples, `seed=42`, `95% CI`) on the `test_gt25km` subset (`n=717`, `205` stations):
+  * `F_E2` (`39.60`) vs `F_PFRML_full` (`46.79`): `Diff = -7.18`, `95% CI = [-11.92, -2.53]`
+  * `F_E2` (`39.60`) vs `E1_metadata_mlp` (`49.84`): `Diff = -10.24`, `95% CI = [-20.50, +0.86]`
+  * `F_PFRML_full` (`46.79`) vs `E1_metadata_mlp` (`49.84`): `Diff = -3.06`, `95% CI = [-14.90, +8.29]`
+* Includes `F_FUSION_R1` and `F_FUSION_R1_meta_off` in all tables when present.
+
+### Part 4: Master Report Numbers ([`scripts/build_report_numbers.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/scripts/build_report_numbers.py) $\to$ [`outputs/results/REPORT_NUMBERS.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/results/REPORT_NUMBERS.md))
+* Automatically compiles all 8 required sections strictly from CSVs, per-epoch curves, and prediction files (`(1)` Provenance, `(2)` Baselines, `(3)` Image models 5-fold station CV last-epoch MAE + per-fold + skill, `(4)` PFRML ladder + paired diffs vs R1 & E2, `(5)` Fusion spatial-cluster CV + per-fold + `_meta_off`, `(6)` Final test & `>25 km` results + paired bootstrap tables, `(7)` Failed/unstable runs with pointers to `outputs/diagnostics/collapse.md`, `(8)` Do-not-quote list).
+* [`tests/test_step5c.py`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/tests/test_step5c.py): 4 new unit tests covering Step 5c scripts.
+
+### Command to Run Full Step 5c Queue (Not Started)
+
+```bash
+nohup caffeinate -dimsu env/bin/python scripts/run_queue_step5c.py > outputs/logs/step5c_nohup.out 2>&1 &
+```
+
+After the queue finishes, regenerate [`outputs/results/final_comparison.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/results/final_comparison.md) and [`outputs/results/REPORT_NUMBERS.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/outputs/results/REPORT_NUMBERS.md):
+
+```bash
+env/bin/python scripts/compare_final.py
+env/bin/python scripts/build_report_numbers.py
+```
 
 ### Proposed Experiments (Not Created or Run)
-* **`F_FUSION_R1` one-shot final evaluation (`fusion_r1_mobilenetv3_s`, `configs/fusion_r1.yaml`, `--modality-dropout 0.3`):** If `E5_fusion_r1_p03` improves over `E2_mobilenetv3_s_pretrained_spatial` (`MAE = 50.69 +- 5.60`) on 5-fold `spatial_cluster` CV while keeping `<name>_meta_off` competitive, running one-shot `final_train_eval.py --name F_FUSION_R1` would directly test whether modality-dropped multimodal fusion beats both `E1_metadata_mlp` (`49.84` on `test > 25 km`) and image-only `F_E2` on unseen regions (`>25 km`).
+* **Decoupled Backbone/Metadata Learning Rates for Fusion (`lr_image=1e-3, lr_meta=3e-4`):** Because `E5_fusion_r1_p00` reaches its lowest `spatial_cluster` validation MAE around epoch `N=7` (`45.74 +- 6.78`) before overfitting station metadata by epoch 30 (`47.45 +- 6.71`), a lower learning rate or stronger weight decay on `MetadataMLP` could prevent late-epoch metadata overfitting without requiring early stopping.
+* **Post-Hoc Equal-Weight Ensemble of `F_E2` and `E1_metadata_mlp` on `test` vs `test_gt25km`:** Since per-image predictions are already saved for both `F_E2` and `E1_metadata_mlp`, a distance-aware or equal-weight post-hoc blend can be evaluated purely on saved predictions as an additional diagnostic baseline if requested.
