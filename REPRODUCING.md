@@ -12,13 +12,13 @@ This repository supports two levels of reproduction: **Level 1** (fast, CPU-only
 - **Random Seed:** `42` (used across `StratifiedGroupKFold`, model initialization, batch shuffling, and `1,000`-resample station bootstrap)
 - **Dataset Revision:** Hugging Face dataset `DeadCardassian/PM25Vision` at commit hash `578bc7c17c99be1aa312ebfe0bda6ce40067ca31`
 
-Exact package versions are pinned in [`requirements.txt`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/requirements.txt).
+Exact package versions are pinned in [`requirements.txt`](requirements.txt).
 
 ---
 
 ## Level 1: Exact Table & Bootstrap Regeneration (No GPUs, No Dataset Download)
 
-Every summary table, paired fold difference, failure diagnosis, and station-bootstrap confidence interval in [`results/REPORT_NUMBERS.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/results/REPORT_NUMBERS.md) and [`results/final_comparison.md`](file:///Users/darth/Projects/ACIT4620/acit-4620-projects/results/final_comparison.md) is computed directly from the tracked CSVs, per-epoch curves, and prediction files inside `results/` (1.8 MB total).
+Every summary table, paired fold difference, failure diagnosis, and station-bootstrap confidence interval in [`results/REPORT_NUMBERS.md`](results/REPORT_NUMBERS.md) and [`results/final_comparison.md`](results/final_comparison.md) is computed directly from the tracked CSVs, per-epoch curves, and prediction files inside `results/` (1.8 MB total).
 
 ```bash
 # 1. Install dependencies (Python >= 3.11)
@@ -31,7 +31,7 @@ python scripts/analysis/compare_final_models.py --results-dir results
 # 3. Regenerate the complete 8-section REPORT_NUMBERS.md from results/
 python scripts/analysis/build_report_numbers.py --results-dir results
 
-# 4. Run offline-capable unit tests (tests not requiring raw dataset images/CSVs pass; full suite runs after Level 2 Step 1)
+# 4. Run offline-capable unit tests (tests not requiring raw dataset images/CSVs pass; full suite runs after Level 2 Stage 0)
 python -m pytest -q
 ```
 
@@ -49,23 +49,30 @@ Level 2 downloads `PM25Vision`, audits the train/test splits, runs all CV queues
 > 2. **Single Seed:** All experiments use a single random seed (`42`) due to the ~20+ hour compute budget; multi-seed variance is not quantified.
 > 3. **Runtime Estimates:** Projected times below were measured on Apple M5 Pro (24 GB). Queue scripts save checkpoints per epoch and skip completed folds automatically on resume. All queues support `--smoke` (tiny subset under `outputs/smoke/`) and `--project-only` (ETA projection without training).
 
-### Stage 0 — Download Dataset & Run Full Test Suite
+### Stage 0 — Download Dataset, Run Full Test Suite & Data Audit
 
 ```bash
 python scripts/data/download_dataset.py
-python -m pytest -q   # Full 55-test suite
+python -m pytest -q                                # Full 55-test suite
+python scripts/analysis/diagnose_folds.py          # Data & fold audit -> outputs/diagnostics/folds.md
 ```
 
-### Stage 1 — Data Audit & Non-Visual / Tabular Baselines (`E0_median`, `E0_ridge`, `E1_metadata_mlp`)
+### Stage 1 — Non-Visual & Tabular Baselines (`E0_median`, `E0_ridge`, `E1_metadata_mlp`, ~5 min)
+
+Generates `outputs/results/baselines_cv_results.csv` and `outputs/checkpoints/E1_metadata_mlp/full_train/preds.npz`:
 
 ```bash
-# E0_median + E0_ridge + E1_metadata_mlp across station, spatial_cluster, and full_train (~5 min)
-python evaluate.py --model median --config configs/default.yaml --group-mode station --output-csv outputs/results/baselines_cv_results.csv
-python evaluate.py --model median --config configs/default.yaml --group-mode spatial_cluster --output-csv outputs/results/baselines_cv_results.csv
-python evaluate.py --model ridge_haze --config configs/default.yaml --group-mode station --output-csv outputs/results/baselines_cv_results.csv
-python evaluate.py --model ridge_haze --config configs/default.yaml --group-mode spatial_cluster --output-csv outputs/results/baselines_cv_results.csv
-python train.py --model metadata_mlp --config configs/default.yaml --group-mode station --all-folds --output-csv outputs/results/baselines_cv_results.csv
-python train.py --model metadata_mlp --config configs/default.yaml --group-mode spatial_cluster --all-folds --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model median --experiment-id E0_median --config configs/default.yaml --group-mode station --fold all --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model median --experiment-id E0_median --config configs/default.yaml --group-mode spatial_cluster --fold all --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model median --experiment-id E0_median --config configs/default.yaml --fold full --output-csv outputs/results/baselines_cv_results.csv
+
+python train.py --model ridge_haze --experiment-id E0_ridge --config configs/default.yaml --group-mode station --fold all --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model ridge_haze --experiment-id E0_ridge --config configs/default.yaml --group-mode spatial_cluster --fold all --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model ridge_haze --experiment-id E0_ridge --config configs/default.yaml --fold full --output-csv outputs/results/baselines_cv_results.csv
+
+python train.py --model metadata_mlp --experiment-id E1_metadata_mlp --config configs/default.yaml --group-mode station --fold all --epochs 40 --lr 1e-3 --reg-loss mse --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model metadata_mlp --experiment-id E1_metadata_mlp --config configs/default.yaml --group-mode spatial_cluster --fold all --epochs 40 --lr 1e-3 --reg-loss mse --output-csv outputs/results/baselines_cv_results.csv
+python train.py --model metadata_mlp --experiment-id E1_metadata_mlp --config configs/default.yaml --fold full --epochs 40 --lr 1e-3 --reg-loss mse --output-csv outputs/results/baselines_cv_results.csv
 ```
 
 ### Stage 2 — Image-Only Backbones & MDNet-T Queue (~6–8 h)
@@ -75,7 +82,6 @@ Runs Fold-0 LR/epoch screens followed by selected 5-fold `station` CV runs (`E2_
 ```bash
 python scripts/experiments/queue_baselines.py --project-only
 python scripts/experiments/queue_baselines.py
-python scripts/analysis/diagnose_folds.py
 ```
 
 ### Stage 3 — PFRML Ablation Ladder (`R1`, `R2`, `T1–T4`, `all`, Extra A/B) (~8–10 h)
