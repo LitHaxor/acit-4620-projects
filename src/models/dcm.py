@@ -22,12 +22,18 @@ adapted per `docs/SPEC.md` Sec. 3.2 & 3.3:
   eval-safe `no_grad` EMA updates, L2-normalized features, squared Euclidean
   distance computed via `matmul` (`2 - 2 cos_sim`, avoiding `torch.cdist`),
   and learnable positive temperature `tau`.
-- `PrototypeGuidedRegressionHead`: Single regression MLP `h([chi_i; c_tilde_i])`
-  operating on the concatenation of `chi_i` and the prototype-weighted feature
-  `c_tilde_i = sum_k p_k c'_k` (Paper 1 Sec. II-D, III-A3, III-C3 Fig. 7;
-  `SPEC.md` Sec. 3.3), or directly on `chi_i` (`in_dim = D = 224`) when
-  `use_prototypes=False` (R1 ablation, Paper 1 Sec. III-C3, Fig. 7), plus
-  closed-form prototype-mixture predictive variance (Paper 17, `SPEC.md` Sec. 1).
+- `PrototypeGuidedRegressionHead`: Single regression MLP `h(.)` supporting:
+  1. `reg_input='chi_proto'` (default, PFRML Sec. III-C3 Fig. 7 `"w/ prototype
+     (prototype-weighted feature)"`): concatenates `[chi_i; c_tilde_i]` where
+     `c_tilde_i = sum_k p_k c'_k` (`2*D = 448`).
+  2. `reg_input='chi'` (PFRML Sec. II-D Eq. 5 & Fig. 5 literal variant,
+     `y_hat_i = h(chi_i)`): regression MLP sees only `chi_i` (`D = 224`) while
+     the prototype/classification branch remains active and trained by
+     cross-entropy + EMA prototype updates.
+  3. `use_prototypes=False` (R1 ablation, PFRML Sec. III-C3 Fig. 7 `"w/o prototype"`):
+     omits prototypes and feeds `chi_i` (`D = 224`) directly to `h(chi_i)`.
+  4. Optional `extra_dim` (e.g., 32-D `MetadataMLP` embedding `m` in Step 5
+     multimodal fusion, yielding `[chi_i; (c_tilde_i); m]`).
 - `BackboneTapWrapper`, `PFRMLHead`, and `PFRMLModel`: Backbone-agnostic
   interface supporting `mobilenetv3_s`, `resnet18`, `mdnet_t`, and `e3b`.
 """
@@ -384,13 +390,21 @@ class PrototypeClassificationHead(nn.Module):
 
 
 class PrototypeGuidedRegressionHead(nn.Module):
-    """Single regression MLP over `[chi_i; c_tilde_i]` or `chi_i` (`SPEC.md` Sec. 3.3, 5).
+    """Single regression MLP over `[chi_i; c_tilde_i]` or `chi_i` (with optional metadata `m`).
 
-    When `use_prototypes=True` (default): computes the prototype-weighted feature
-    `c_tilde_i = sum_k p_k c'_k`, concatenates `[chi_i; c_tilde_i]` (`2*D = 448`),
-    and feeds it to one single regression MLP `h(.) -> 1` (not 6 separate branches).
-    When `use_prototypes=False` (R1 ablation, Paper 1 Sec. III-C3, Fig. 7): feeds
-    pooled `chi_i` (`D = 224`) directly into the single regression MLP `h(chi_i) -> 1`.
+    Citations (Paper 1: Wang et al., IEEE TGRS 2026, PFRML):
+    - **PFRML Sec. III-C3, Fig. 7 (`reg_input='chi_proto'`, default when `use_prototypes=True`):**
+      Explicitly labels the prototype-constrained representation `"w/ prototype
+      (prototype-weighted feature)"`. Computes `c_tilde_i = sum_k p(y=k|chi_i) c'_k`
+      and feeds `[chi_i; c_tilde_i]` (`2*D = 448`) into one single regression MLP `h(.)`.
+    - **PFRML Sec. II-D, Eq. (5) & Fig. 5 (`reg_input='chi'`, literal Eq. 5 variant):**
+      Writes `y_hat_i = h(chi_i)` where the regression MLP `h(.)` sees only `chi_i`
+      (`D = 224`), while the prototype/classification branch still runs in parallel
+      (trained by cross-entropy `L_cls` and EMA prototype updates).
+    - **PFRML Sec. III-C3, Fig. 7 (`use_prototypes=False`, R1 `"w/o prototype"`):**
+      Omits prototypes entirely (`cls_loss = 0`) and feeds `chi_i` (`D = 224`) to `h(chi_i)`.
+    - **Step 5 Multimodal Fusion (`extra_dim > 0`):**
+      Appends metadata embedding `m` (`32`-D) to form `[chi_i; (c_tilde_i); m]`.
     """
 
     def __init__(
@@ -399,11 +413,24 @@ class PrototypeGuidedRegressionHead(nn.Module):
         hidden_dims: Sequence[int] = (256,),
         dropout: float = 0.1,
         use_prototypes: bool = True,
+        reg_input: str = "chi_proto",
+        extra_dim: int = 0,
     ) -> None:
         super().__init__()
+        if reg_input not in {"chi_proto", "chi"}:
+            raise ValueError(
+                f"Unsupported reg_input={reg_input!r}. Expected 'chi_proto' or 'chi'."
+            )
         self.dim = int(dim)
         self.use_prototypes = bool(use_prototypes)
-        in_dim = self.dim * 2 if self.use_prototypes else self.dim
+        self.reg_input = str(reg_input)
+        self.extra_dim = int(extra_dim)
+        self.uses_proto_in_reg = self.use_prototypes and (self.reg_input == "chi_proto")
+
+        base_dim = self.dim * 2 if self.uses_proto_in_reg else self.dim
+        in_dim = base_dim + self.extra_dim
+        self.in_dim = in_dim
+
         layers: List[nn.Module] = []
         prev = in_dim
         for h in hidden_dims:
@@ -420,14 +447,22 @@ class PrototypeGuidedRegressionHead(nn.Module):
         chi: torch.Tensor,
         probs: Optional[torch.Tensor] = None,
         prototypes_norm: Optional[torch.Tensor] = None,
+        extra_feat: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Predict scaled AQI `[B]` from `chi [B, D]` (and `probs`, `prototypes` when enabled)."""
-        if not self.use_prototypes:
-            return self.mlp(chi).squeeze(-1)
-        if probs is None or prototypes_norm is None:
-            raise ValueError("use_prototypes=True requires `probs` and `prototypes_norm`.")
-        c_tilde = torch.matmul(probs, prototypes_norm)  # [B, D]
-        fused = torch.cat([chi, c_tilde], dim=-1)  # [B, 2D]
+        """Predict scaled AQI `[B]` from `chi [B, D]` (plus `c_tilde` and/or `extra_feat`)."""
+        parts: List[torch.Tensor] = [chi]
+        if self.uses_proto_in_reg:
+            if probs is None or prototypes_norm is None:
+                raise ValueError(
+                    "use_prototypes=True with reg_input='chi_proto' requires `probs` and `prototypes_norm`."
+                )
+            c_tilde = torch.matmul(probs, prototypes_norm)  # [B, D]
+            parts.append(c_tilde)
+        if self.extra_dim > 0:
+            if extra_feat is None:
+                raise ValueError(f"extra_dim={self.extra_dim} requires `extra_feat` tensor.")
+            parts.append(extra_feat)
+        fused = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
         return self.mlp(fused).squeeze(-1)
 
     @torch.no_grad()
@@ -436,22 +471,30 @@ class PrototypeGuidedRegressionHead(nn.Module):
         chi: torch.Tensor,
         probs: torch.Tensor,
         prototypes_norm: torch.Tensor,
+        extra_feat: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Closed-form predictive variance diagnostic (`SPEC.md` Sec. 1, Paper 17).
 
-        Evaluates the single regression MLP `h([chi_i; c'_k])` for each
+        Evaluates the single regression MLP `h([chi_i; c'_k; (m)])` for each
         prototype `k=1..K`, returning `(y_mean [B], var [B], y_per_proto [B, K])`.
+        When `uses_proto_in_reg=False` (R1 or `reg_input='chi'`), the regression
+        MLP does not depend on `c'_k`, so variance across prototypes is identically zero.
         """
         b, k = probs.shape
-        if not self.use_prototypes:
-            y_pred = self.mlp(chi).squeeze(-1)
+        if not self.uses_proto_in_reg:
+            y_pred = self.forward(chi, probs, prototypes_norm, extra_feat=extra_feat)
             zeros_var = torch.zeros_like(y_pred)
             return y_pred, zeros_var, y_pred.unsqueeze(1).expand(b, k)
 
         per_proto_preds = []
         for idx in range(k):
             p_k = prototypes_norm[idx : idx + 1].expand(b, -1)
-            y_k = self.mlp(torch.cat([chi, p_k], dim=-1)).squeeze(-1)
+            parts = [chi, p_k]
+            if self.extra_dim > 0:
+                if extra_feat is None:
+                    raise ValueError(f"extra_dim={self.extra_dim} requires `extra_feat` tensor.")
+                parts.append(extra_feat)
+            y_k = self.mlp(torch.cat(parts, dim=-1)).squeeze(-1)
             per_proto_preds.append(y_k)
         y_stack = torch.stack(per_proto_preds, dim=1)  # [B, K]
         y_mean = (probs * y_stack).sum(dim=1)
@@ -461,7 +504,7 @@ class PrototypeGuidedRegressionHead(nn.Module):
 
 @dataclass
 class PFRMLOutput:
-    """Structured output of `PFRMLHead` and `PFRMLModel` (dict-key compatible)."""
+    """Structured output of `PFRMLHead`, `PFRMLModel`, and `PFRMLFusionModel`."""
 
     logits: Optional[torch.Tensor]
     probs: Optional[torch.Tensor]
@@ -471,6 +514,8 @@ class PFRMLOutput:
     attn_weights: torch.Tensor
     alpha_gate: Optional[torch.Tensor] = None
     phys_scalars: Optional[torch.Tensor] = None
+    aux_reg_pred: Optional[torch.Tensor] = None
+    meta_embed: Optional[torch.Tensor] = None
 
     def __getitem__(self, key: str) -> Optional[torch.Tensor]:
         return getattr(self, key)
@@ -486,7 +531,8 @@ class PFRMLHead(nn.Module):
     - Toggle #1: `AttentionPooling` (`use_attention_pooling`)
     - Toggle #2: `PhysicsPriorGate` (`use_physics_gate`)
     - `PrototypeClassificationHead` (when `use_prototypes=True`; omitted in R1 when `False`)
-    - `PrototypeGuidedRegressionHead`
+    - `PrototypeGuidedRegressionHead` (`reg_input='chi_proto'` per PFRML Fig. 7 or
+      `reg_input='chi'` per PFRML Eq. 5)
     """
 
     def __init__(
@@ -510,6 +556,7 @@ class PFRMLHead(nn.Module):
         use_prototypes: bool = True,
         proto_ema_decay: float = 0.9,
         proto_tau_init: float = 0.2,
+        reg_input: str = "chi_proto",
         reg_hidden_dims: Sequence[int] = (256,),
         reg_dropout: float = 0.1,
     ) -> None:
@@ -517,6 +564,7 @@ class PFRMLHead(nn.Module):
         self.dim = int(dim)
         self.num_classes = int(num_classes)
         self.use_prototypes = bool(use_prototypes)
+        self.reg_input = str(reg_input)
 
         if isinstance(in_channels, int):
             self.is_multistage = False
@@ -566,6 +614,7 @@ class PFRMLHead(nn.Module):
             hidden_dims=reg_hidden_dims,
             dropout=reg_dropout,
             use_prototypes=self.use_prototypes,
+            reg_input=self.reg_input,
         )
 
     def forward(

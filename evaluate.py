@@ -33,6 +33,11 @@ from src.models.baselines import (
     build_resnet18_scratch,
 )
 from src.models.dcm import PFRMLModel
+from src.models.fusion import (
+    FUSION_MODEL_NAMES,
+    FUSION_MODEL_SPECS,
+    PFRMLFusionModel,
+)
 from src.models.mdnet import build_mdnet_t, build_mobilenet_v3_small_md_neck
 
 EPA_BIN_MIDPOINTS = np.array([25.0, 75.0, 125.0, 175.0, 250.0, 450.0], dtype=np.float64)
@@ -58,12 +63,26 @@ CSV_FIELDNAMES: Tuple[str, ...] = (
 )
 
 
-def default_pfrml_experiment_id(model_name: str, config_path: Union[str, Path]) -> str:
-    """Format default Step 4 experiment ID as `E4_<backbone>_<config name>`."""
+def default_pfrml_experiment_id(
+    model_name: str,
+    config_path: Union[str, Path],
+    reg_input: str = "chi_proto",
+) -> str:
+    """Format default Step 4/5 PFRML experiment ID.
+
+    Step 4 configs use `E4_<backbone>_<config name>`; Step 5 `pfrml_reg_chi`
+    (`reg_input='chi'`) uses `E5_<backbone>_<config name>`.
+    """
     backbone = PFRML_MODEL_SPECS[model_name][0]
     stem = Path(config_path).stem
     cfg_tag = stem[len("pfrml_") :] if stem.startswith("pfrml_") else stem
-    return f"E4_{backbone}_{cfg_tag}"
+    prefix = "E5" if (cfg_tag == "reg_chi" or reg_input == "chi") else "E4"
+    return f"{prefix}_{backbone}_{cfg_tag}"
+
+
+def default_fusion_experiment_id(model_name: str) -> str:
+    """Format default Step 5 fusion experiment ID as `E5_<model_name>`."""
+    return f"E5_{model_name}"
 
 
 def resolve_device(requested: str = "auto") -> torch.device:
@@ -240,8 +259,53 @@ def _build_pfrml_for_eval(model_name: str, cfg: Config) -> PFRMLModel:
         use_prototypes=p.use_prototypes,
         proto_ema_decay=p.proto_ema_decay,
         proto_tau_init=p.proto_tau_init,
+        reg_input=p.reg_input,
         reg_hidden_dims=p.reg_hidden_dims,
         reg_dropout=p.reg_dropout,
+    )
+    model.backbone.pretrained = pretrained
+    return model
+
+
+def _build_fusion_for_eval(model_name: str, cfg: Config) -> PFRMLFusionModel:
+    spec = FUSION_MODEL_SPECS[model_name]
+    backbone_name = str(spec["backbone_name"])
+    pretrained = bool(spec["pretrained"])
+    use_prototypes = (
+        False
+        if model_name == "fusion_r1_mobilenetv3_s"
+        else bool(cfg.pfrml.use_prototypes)
+    )
+    p = cfg.pfrml
+    model = PFRMLFusionModel(
+        backbone_name=backbone_name,
+        pretrained=False,
+        tap_mode=p.tap_mode or "multistage",
+        e3b_single_tap=p.e3b_single_tap,
+        dim=p.dim,
+        num_classes=p.num_classes,
+        dcm_fusion=p.dcm_fusion,
+        dcm_avg_pool_kernel=p.dcm_avg_pool_kernel,
+        transformer_layers=p.transformer_layers,
+        transformer_heads=p.transformer_heads,
+        transformer_mlp_ratio=p.transformer_mlp_ratio,
+        transformer_dropout=p.transformer_dropout,
+        use_attention_pooling=p.use_attention_pooling,
+        pooling_mode=p.pooling_mode,
+        use_physics_gate=p.use_physics_gate,
+        haze_patch_size=cfg.model.haze_patch_size,
+        haze_omega=cfg.model.haze_omega,
+        physics_input_is_normalized=p.physics_input_is_normalized,
+        use_prototypes=use_prototypes,
+        proto_ema_decay=p.proto_ema_decay,
+        proto_tau_init=p.proto_tau_init,
+        reg_input=p.reg_input,
+        reg_hidden_dims=p.reg_hidden_dims,
+        reg_dropout=p.reg_dropout,
+        metadata_dim=cfg.model.metadata_dim,
+        metadata_hidden=cfg.model.metadata_hidden,
+        metadata_dropout=cfg.model.metadata_dropout,
+        modality_dropout=p.modality_dropout,
     )
     model.backbone.pretrained = pretrained
     return model
@@ -255,6 +319,7 @@ def _predict_from_checkpoint(
     images_dir: Path,
     haze_features: Optional[np.ndarray] = None,
     device: Optional[torch.device] = None,
+    metadata_off: bool = False,
 ) -> Tuple[np.ndarray, Optional[np.ndarray], str]:
     dev = device if device is not None else resolve_device(cfg.train.device)
 
@@ -290,12 +355,16 @@ def _predict_from_checkpoint(
                 preds.append(out.numpy())
         return np.clip(np.concatenate(preds, axis=0), 0.0, None), None, ""
 
-    if model_name in PFRML_MODEL_SPECS:
+    if model_name in PFRML_MODEL_SPECS or model_name in FUSION_MODEL_SPECS:
         ckpt = torch.load(ckpt_dir / "model.pt", map_location="cpu", weights_only=False)
-        pfrml_model = _build_pfrml_for_eval(model_name, cfg)
-        pfrml_model.load_state_dict(ckpt["state_dict"])
-        pfrml_model = pfrml_model.to(dev)
-        pfrml_model.eval()
+        is_fusion = model_name in FUSION_MODEL_SPECS
+        if is_fusion:
+            eval_model: Union[PFRMLModel, PFRMLFusionModel] = _build_fusion_for_eval(model_name, cfg)
+        else:
+            eval_model = _build_pfrml_for_eval(model_name, cfg)
+        eval_model.load_state_dict(ckpt["state_dict"])
+        eval_model = eval_model.to(dev)
+        eval_model.eval()
 
         ds = PM25Dataset(
             df,
@@ -314,13 +383,21 @@ def _predict_from_checkpoint(
         var_chunks: List[np.ndarray] = []
         with torch.no_grad():
             p_norm = None
-            if pfrml_model.head.use_prototypes and pfrml_model.head.proto_cls is not None:
-                p_norm = pfrml_model.head.proto_cls._l2_normalize(
-                    pfrml_model.head.proto_cls.prototypes.detach()
+            if eval_model.head.use_prototypes and eval_model.head.proto_cls is not None:
+                p_norm = eval_model.head.proto_cls._l2_normalize(
+                    eval_model.head.proto_cls.prototypes.detach()
                 ).float()
             for batch in loader:
                 images = batch.image.to(dev)
-                out = pfrml_model(images, targets=None)
+                if isinstance(eval_model, PFRMLFusionModel):
+                    out = eval_model(
+                        images,
+                        metadata=batch.metadata.to(dev),
+                        targets=None,
+                        metadata_off=metadata_off,
+                    )
+                else:
+                    out = eval_model(images, targets=None)
                 pm25_chunks.append(
                     np.clip(out.reg_pred.float().cpu().numpy() * cfg.data.aqi_scale, 0.0, None)
                 )
@@ -329,14 +406,21 @@ def _predict_from_checkpoint(
                         out.logits.float().argmax(dim=-1).cpu().numpy().astype(np.int64)
                     )
                 if p_norm is not None and out.probs is not None:
-                    _, batch_var, _ = pfrml_model.head.reg_head.predict_prototype_mixture_variance(
-                        out.chi.float(), out.probs.float(), p_norm
+                    extra_f = (
+                        out.meta_embed.float()
+                        if (isinstance(eval_model, PFRMLFusionModel) and out.meta_embed is not None)
+                        else None
+                    )
+                    _, batch_var, _ = eval_model.head.reg_head.predict_prototype_mixture_variance(
+                        out.chi.float(), out.probs.float(), p_norm, extra_feat=extra_f
                     )
                     var_chunks.append(batch_var.cpu().numpy())
 
         mean_proto_var = float(np.mean(np.concatenate(var_chunks, axis=0))) if var_chunks else 0.0
         cls_src = "logits" if bin_chunks else "reg_pred_bins"
         notes = f"reg_src=reg_pred*aqi_scale,cls_src={cls_src},proto_mix_var={mean_proto_var:.6f}"
+        if is_fusion and metadata_off:
+            notes += ",metadata_off=True"
         return (
             np.concatenate(pm25_chunks, axis=0),
             np.concatenate(bin_chunks, axis=0) if bin_chunks else None,
@@ -408,6 +492,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--outputs-dir", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--modality-dropout", type=float, default=None)
+    parser.add_argument("--metadata-off", action="store_true", help="Zero metadata embedding m during evaluation.")
     parser.add_argument("--from-preds", action="store_true", help="Read saved preds.npz instead of running checkpoint.")
     return parser.parse_args(argv)
 
@@ -425,13 +511,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         overrides["data.group_mode"] = args.group_mode
     if args.device is not None:
         overrides["train.device"] = args.device
+    if args.modality_dropout is not None:
+        overrides["pfrml.modality_dropout"] = float(args.modality_dropout)
 
     cfg = load_config(args.config, overrides=overrides if overrides else None)
     model_name = args.model or cfg.model.name
     if args.experiment_id:
         experiment_id = args.experiment_id
+    elif model_name in FUSION_MODEL_SPECS:
+        experiment_id = default_fusion_experiment_id(model_name)
     elif model_name in PFRML_MODEL_SPECS:
-        experiment_id = default_pfrml_experiment_id(model_name, args.config)
+        experiment_id = default_pfrml_experiment_id(model_name, args.config, reg_input=cfg.pfrml.reg_input)
     else:
         experiment_id = model_name
 
@@ -440,9 +530,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     device = resolve_device(cfg.train.device)
 
     if args.output_csv is None:
-        default_csv_name = (
-            "step4_eval.csv" if model_name in PFRML_MODEL_SPECS else "step3_eval.csv"
-        )
+        if experiment_id.startswith("E5_") or model_name in FUSION_MODEL_SPECS:
+            default_csv_name = "step5_eval.csv"
+        elif model_name in PFRML_MODEL_SPECS:
+            default_csv_name = "step4_eval.csv"
+        else:
+            default_csv_name = "step3_eval.csv"
         output_csv: Optional[Path] = Path(cfg.outputs_dir) / "results" / default_csv_name
     elif args.output_csv == "":
         output_csv = None
@@ -451,10 +544,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     train_df, test_df = load_and_clean_metadata(cfg.data.train_csv, cfg.data.test_csv)
     ckpt_root = Path(cfg.outputs_dir) / "checkpoints" / experiment_id
+    rec_exp_id = (
+        f"{experiment_id}_meta_off"
+        if (args.metadata_off and not experiment_id.endswith("_meta_off"))
+        else experiment_id
+    )
 
     if args.fold == "full":
         ckpt_dir = ckpt_root / "full_train"
-        preds_path = ckpt_dir / "preds.npz"
+        preds_name = "preds_meta_off.npz" if args.metadata_off else "preds.npz"
+        preds_path = ckpt_dir / preds_name
         notes = ""
         if args.from_preds and preds_path.exists():
             data = np.load(preds_path)
@@ -471,7 +570,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 cache = np.load(Path(cfg.outputs_dir) / "cache" / "haze_features_v1.npz")
                 haze_test = cache["test_X"]
             y_pred, y_pred_bin, notes = _predict_from_checkpoint(
-                ckpt_dir, model_name, test_df, cfg, Path(cfg.data.test_images_dir), haze_test, device
+                ckpt_dir,
+                model_name,
+                test_df,
+                cfg,
+                Path(cfg.data.test_images_dir),
+                haze_test,
+                device,
+                metadata_off=bool(args.metadata_off),
             )
 
         y_true = test_df["pm25"].to_numpy(dtype=np.float64)
@@ -481,7 +587,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             y_pred_pm25=y_pred,
             y_true_bin=y_bin,
             y_pred_bin=y_pred_bin,
-            experiment_id=experiment_id,
+            experiment_id=rec_exp_id,
             model=model_name,
             seed=seed,
             group_mode="full_train",
@@ -490,7 +596,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             output_csv=output_csv,
             notes=notes,
         )
-        print(f"[{experiment_id} | test (n={len(y_true)})] {format_metrics_oneline(m_all)}")
+        print(f"[{rec_exp_id} | test (n={len(y_true)})] {format_metrics_oneline(m_all)}")
 
         _, gt25_mask = compute_test_distance_mask(train_df, test_df, min_km=25.0)
         m_gt25 = evaluate_predictions_and_record(
@@ -498,7 +604,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             y_pred_pm25=y_pred[gt25_mask],
             y_true_bin=y_bin[gt25_mask],
             y_pred_bin=y_pred_bin[gt25_mask] if y_pred_bin is not None else None,
-            experiment_id=experiment_id,
+            experiment_id=rec_exp_id,
             model=model_name,
             seed=seed,
             group_mode="full_train",
@@ -508,7 +614,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             notes=notes,
         )
         print(
-            f"[{experiment_id} | test >25km (n={int(gt25_mask.sum())})] "
+            f"[{rec_exp_id} | test >25km (n={int(gt25_mask.sum())})] "
             f"{format_metrics_oneline(m_gt25)}"
         )
         return
@@ -541,7 +647,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             val_idx = _subsample_indices(val_idx, n_va)
 
         val_df = train_df.iloc[val_idx]
-        preds_path = ckpt_dir / "preds.npz"
+        preds_name = "preds_meta_off.npz" if args.metadata_off else "preds.npz"
+        preds_path = ckpt_dir / preds_name
         notes = ""
         if args.from_preds and preds_path.exists():
             data = np.load(preds_path)
@@ -556,7 +663,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         else:
             h_val = haze_train[val_idx] if haze_train is not None else None
             y_pred, y_pred_bin, notes = _predict_from_checkpoint(
-                ckpt_dir, model_name, val_df, cfg, Path(cfg.data.train_images_dir), h_val, device
+                ckpt_dir,
+                model_name,
+                val_df,
+                cfg,
+                Path(cfg.data.train_images_dir),
+                h_val,
+                device,
+                metadata_off=bool(args.metadata_off),
             )
 
         m = evaluate_predictions_and_record(
@@ -564,7 +678,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             y_pred_pm25=y_pred,
             y_true_bin=val_df["aqi_bin"].to_numpy(dtype=np.int64),
             y_pred_bin=y_pred_bin,
-            experiment_id=experiment_id,
+            experiment_id=rec_exp_id,
             model=model_name,
             seed=seed,
             group_mode=group_mode,
@@ -574,13 +688,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             notes=notes,
         )
         fold_metrics.append(m)
-        print(f"[{experiment_id} | {group_mode} | fold {k}] {format_metrics_oneline(m)}")
+        print(f"[{rec_exp_id} | {group_mode} | fold {k}] {format_metrics_oneline(m)}")
 
     if len(fold_metrics) > 1:
         summary = summarize_fold_metrics(fold_metrics)
         fmt = format_mean_std(summary)
         print(
-            f"[{experiment_id} | {group_mode} | 5-fold mean +- std] "
+            f"[{rec_exp_id} | {group_mode} | 5-fold mean +- std] "
             + " ".join(f"{k}={v}" for k, v in fmt.items())
         )
 

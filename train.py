@@ -1,4 +1,4 @@
-"""Training CLI for Step 2 baselines (E0, E1), Step 3 vision models (E2, E3, E3b), and Step 4 PFRML models (E4)."""
+"""Training CLI for Step 2 baselines (E0, E1), Step 3 vision models (E2, E3, E3b), Step 4 PFRML models (E4), and Step 5 Fusion models (E5)."""
 
 import argparse
 import csv
@@ -10,7 +10,7 @@ import tempfile
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,7 @@ from evaluate import (
     append_result_row,
     build_result_row,
     compute_test_distance_mask,
+    default_fusion_experiment_id,
     default_pfrml_experiment_id,
     evaluate_predictions_and_record,
     format_metrics_oneline,
@@ -48,6 +49,11 @@ from src.models.baselines import (
     build_resnet18_scratch,
 )
 from src.models.dcm import PFRMLModel
+from src.models.fusion import (
+    FUSION_MODEL_NAMES,
+    FUSION_MODEL_SPECS,
+    PFRMLFusionModel,
+)
 from src.models.mdnet import build_mdnet_t, build_mobilenet_v3_small_md_neck
 from src.pfrml_losses import PFRMLMultitaskLoss
 
@@ -59,7 +65,11 @@ STEP3_IMAGE_MODEL_NAMES: Tuple[str, ...] = (
     "mdnet_t_reg",
     "mdnet_t_cls",
 )
-IMAGE_MODEL_NAMES: Tuple[str, ...] = (*STEP3_IMAGE_MODEL_NAMES, *PFRML_MODEL_NAMES)
+IMAGE_MODEL_NAMES: Tuple[str, ...] = (
+    *STEP3_IMAGE_MODEL_NAMES,
+    *PFRML_MODEL_NAMES,
+    *FUSION_MODEL_NAMES,
+)
 ALL_MODEL_NAMES: Tuple[str, ...] = ("median", "ridge_haze", "metadata_mlp", *IMAGE_MODEL_NAMES)
 
 # Midpoints of the 6 US EPA AQI bins [0-50, 51-100, 101-150, 151-200, 201-300, 301-600]
@@ -135,7 +145,7 @@ def _subsample_indices(indices: np.ndarray, count: int) -> np.ndarray:
 
 
 def build_image_model(model_name: str, cfg: Config) -> Tuple[nn.Module, str]:
-    """Instantiate a Step 3 or Step 4 PFRML vision model and return (model, head_type)."""
+    """Instantiate a Step 3, Step 4 PFRML, or Step 5 Fusion model and return (model, head_type)."""
     num_classes = int(cfg.model.num_classes)
     if model_name == "resnet18_scratch":
         return build_resnet18_scratch(head_type="regression", num_classes=num_classes), "regression"
@@ -180,10 +190,62 @@ def build_image_model(model_name: str, cfg: Config) -> Tuple[nn.Module, str]:
             use_prototypes=p.use_prototypes,
             proto_ema_decay=p.proto_ema_decay,
             proto_tau_init=p.proto_tau_init,
+            reg_input=p.reg_input,
             reg_hidden_dims=p.reg_hidden_dims,
             reg_dropout=p.reg_dropout,
         )
         return model, "multitask"
+    if model_name in FUSION_MODEL_SPECS:
+        spec = FUSION_MODEL_SPECS[model_name]
+        backbone_name = str(spec["backbone_name"])
+        pretrained = bool(spec["pretrained"])
+        p = cfg.pfrml
+        use_prototypes = (
+            False
+            if model_name == "fusion_r1_mobilenetv3_s"
+            else bool(p.use_prototypes)
+        )
+        use_attn = (
+            False
+            if model_name == "fusion_r1_mobilenetv3_s"
+            else bool(p.use_attention_pooling or spec["use_attention_pooling"])
+        )
+        use_phys = (
+            False
+            if model_name == "fusion_r1_mobilenetv3_s"
+            else bool(p.use_physics_gate or spec["use_physics_gate"])
+        )
+        fusion_model = PFRMLFusionModel(
+            backbone_name=backbone_name,
+            pretrained=pretrained,
+            tap_mode=p.tap_mode or "multistage",
+            e3b_single_tap=p.e3b_single_tap,
+            dim=p.dim,
+            num_classes=p.num_classes,
+            dcm_fusion=p.dcm_fusion,
+            dcm_avg_pool_kernel=p.dcm_avg_pool_kernel,
+            transformer_layers=p.transformer_layers,
+            transformer_heads=p.transformer_heads,
+            transformer_mlp_ratio=p.transformer_mlp_ratio,
+            transformer_dropout=p.transformer_dropout,
+            use_attention_pooling=use_attn,
+            pooling_mode=p.pooling_mode,
+            use_physics_gate=use_phys,
+            haze_patch_size=cfg.model.haze_patch_size,
+            haze_omega=cfg.model.haze_omega,
+            physics_input_is_normalized=p.physics_input_is_normalized,
+            use_prototypes=use_prototypes,
+            proto_ema_decay=p.proto_ema_decay,
+            proto_tau_init=p.proto_tau_init,
+            reg_input=p.reg_input,
+            reg_hidden_dims=p.reg_hidden_dims,
+            reg_dropout=p.reg_dropout,
+            metadata_dim=cfg.model.metadata_dim,
+            metadata_hidden=cfg.model.metadata_hidden,
+            metadata_dropout=cfg.model.metadata_dropout,
+            modality_dropout=p.modality_dropout,
+        )
+        return fusion_model, "multitask"
     raise ValueError(f"Unknown image model_name={model_name!r}")
 
 
@@ -191,6 +253,8 @@ def build_fold_loss(
     head_type: str,
     cfg: Config,
     train_bins: Optional[Sequence[int]] = None,
+    use_prototypes_override: Optional[bool] = None,
+    aux_loss_weight: float = 0.0,
 ) -> nn.Module:
     """Build loss function for a fold; class weights computed strictly from fold training bins."""
     if head_type == "regression":
@@ -201,7 +265,12 @@ def build_fold_loss(
     if head_type == "classification":
         return LabelSmoothingCrossEntropy(eps=cfg.loss.cls_eps)
     if head_type == "multitask":
-        if train_bins is None and cfg.pfrml.use_prototypes:
+        use_protos = (
+            bool(use_prototypes_override)
+            if use_prototypes_override is not None
+            else bool(cfg.pfrml.use_prototypes)
+        )
+        if train_bins is None and use_protos:
             raise ValueError("PFRML multitask loss requires fold-internal `train_bins`.")
         return PFRMLMultitaskLoss.from_loss_config(
             cfg.loss,
@@ -209,14 +278,15 @@ def build_fold_loss(
                 np.asarray(train_bins, dtype=np.int64) if train_bins is not None else None
             ),
             num_classes=int(cfg.pfrml.num_classes),
-            use_prototypes=bool(cfg.pfrml.use_prototypes),
+            use_prototypes=use_protos,
+            aux_loss_weight=float(aux_loss_weight),
         )
     raise ValueError(f"Unsupported head_type={head_type!r}")
 
 
 @torch.no_grad()
 def init_pfrml_prototypes_from_train_fold(
-    model: PFRMLModel,
+    model: Union[PFRMLModel, PFRMLFusionModel],
     train_df: pd.DataFrame,
     train_images_dir: Path,
     cfg: Config,
@@ -249,7 +319,10 @@ def init_pfrml_prototypes_from_train_fold(
     bin_chunks: List[torch.Tensor] = []
     for batch in init_loader:
         images = batch.image.to(device)
-        out = model(images, targets=None)
+        if isinstance(model, PFRMLFusionModel):
+            out = model(images, metadata=batch.metadata.to(device), targets=None)
+        else:
+            out = model(images, targets=None)
         chi_chunks.append(out.chi.detach().float())
         bin_chunks.append(batch.aqi_bin.to(device))
     if chi_chunks:
@@ -492,6 +565,7 @@ def _evaluate_image_model(
     device: torch.device,
     aqi_scale: float,
     use_amp: bool,
+    metadata_off: bool = False,
 ) -> Tuple[float, np.ndarray, Optional[np.ndarray], Optional[float]]:
     """Run validation pass and return (val_loss, y_pred_pm25, y_pred_bin, mean_proto_var)."""
     model.eval()
@@ -511,7 +585,7 @@ def _evaluate_image_model(
         p_norm = None
         if (
             head_type == "multitask"
-            and isinstance(model, PFRMLModel)
+            and isinstance(model, (PFRMLModel, PFRMLFusionModel))
             and model.head.use_prototypes
             and model.head.proto_cls is not None
         ):
@@ -526,7 +600,15 @@ def _evaluate_image_model(
             bs = images.shape[0]
             with amp_ctx:
                 if head_type == "multitask":
-                    out = model(images, targets=None)
+                    if isinstance(model, PFRMLFusionModel):
+                        out = model(
+                            images,
+                            metadata=batch.metadata.to(device),
+                            targets=None,
+                            metadata_off=metadata_off,
+                        )
+                    else:
+                        out = model(images, targets=None)
                     loss, _ = loss_fn(out, targets_bin, targets_aqi)
                 else:
                     out = model(images)
@@ -553,9 +635,18 @@ def _evaluate_image_model(
                 if out.logits is not None:
                     pred_bins = out.logits.float().argmax(dim=-1).cpu().numpy().astype(np.int64)
                     bin_chunks.append(pred_bins)
-                if p_norm is not None and out.probs is not None and isinstance(model, PFRMLModel):
+                if (
+                    p_norm is not None
+                    and out.probs is not None
+                    and isinstance(model, (PFRMLModel, PFRMLFusionModel))
+                ):
+                    extra_f = (
+                        out.meta_embed.float()
+                        if (isinstance(model, PFRMLFusionModel) and out.meta_embed is not None)
+                        else None
+                    )
                     _, batch_var, _ = model.head.reg_head.predict_prototype_mixture_variance(
-                        out.chi.float(), out.probs.float(), p_norm
+                        out.chi.float(), out.probs.float(), p_norm, extra_feat=extra_f
                     )
                     var_chunks.append(batch_var.cpu().numpy())
 
@@ -622,9 +713,17 @@ def _train_predict_image_model(
     ckpt_dir: Path,
     resume: bool = False,
     max_samples: Optional[int] = None,
-) -> Tuple[np.ndarray, Optional[np.ndarray], str]:
+    metadata_off: bool = False,
+) -> Tuple[
+    np.ndarray,
+    Optional[np.ndarray],
+    str,
+    Optional[Tuple[np.ndarray, Optional[np.ndarray], str]],
+]:
     seed_everything(seed)
     aqi_scale = float(cfg.data.aqi_scale)
+    is_e5 = experiment_id.startswith("E5_")
+    is_fusion = model_name in FUSION_MODEL_SPECS
 
     train_tf = get_train_transforms(
         image_size=cfg.data.image_size,
@@ -670,7 +769,19 @@ def _train_predict_image_model(
     model = model.to(device)
 
     train_bins = train_df["aqi_bin"].to_numpy(dtype=np.int64)
-    loss_fn = build_fold_loss(head_type=head_type, cfg=cfg, train_bins=train_bins).to(device)
+    use_protos_flag = (
+        bool(model.head.use_prototypes)
+        if isinstance(model, (PFRMLModel, PFRMLFusionModel))
+        else False
+    )
+    aux_w = float(cfg.pfrml.aux_loss_weight) if is_fusion else 0.0
+    loss_fn = build_fold_loss(
+        head_type=head_type,
+        cfg=cfg,
+        train_bins=train_bins,
+        use_prototypes_override=use_protos_flag,
+        aux_loss_weight=aux_w,
+    ).to(device)
 
     total_epochs = int(cfg.train.epochs)
     warmup_epochs = int(cfg.train.warmup_epochs)
@@ -711,10 +822,20 @@ def _train_predict_image_model(
     start_epoch = 1
     best_val_loss = float("inf")
     best_epoch = 0
+    best_ep_mae = float("nan")
     best_state: Optional[Dict[str, torch.Tensor]] = None
     best_preds: Optional[np.ndarray] = None
     best_pred_bins: Optional[np.ndarray] = None
     best_proto_var: Optional[float] = None
+
+    last_epoch = 0
+    last_val_loss = float("nan")
+    last_ep_mae = float("nan")
+    last_state: Optional[Dict[str, torch.Tensor]] = None
+    last_preds: Optional[np.ndarray] = None
+    last_pred_bins: Optional[np.ndarray] = None
+    last_proto_var: Optional[float] = None
+
     epoch_times: List[float] = []
 
     if resume and last_ckpt_path.exists():
@@ -725,10 +846,20 @@ def _train_predict_image_model(
             scheduler.load_state_dict(ckpt["scheduler_state"])
             best_val_loss = float(ckpt["best_val_loss"])
             best_epoch = int(ckpt["best_epoch"])
+            best_ep_mae = float(ckpt.get("best_ep_mae", float("nan")))
             best_state = ckpt["best_state"]
             best_preds = ckpt["best_preds"]
             best_pred_bins = ckpt["best_pred_bins"]
             best_proto_var = ckpt.get("best_proto_var")
+
+            last_epoch = int(ckpt.get("epoch", 0))
+            last_val_loss = float(ckpt.get("last_val_loss", best_val_loss))
+            last_ep_mae = float(ckpt.get("last_ep_mae", best_ep_mae))
+            last_state = ckpt["model_state"]
+            last_preds = ckpt.get("last_preds", best_preds)
+            last_pred_bins = ckpt.get("last_pred_bins", best_pred_bins)
+            last_proto_var = ckpt.get("last_proto_var", best_proto_var)
+
             epoch_times = [float(x) for x in ckpt.get("epoch_times", [])]
             start_epoch = int(ckpt["epoch"]) + 1
             if "rng_python" in ckpt:
@@ -763,7 +894,15 @@ def _train_predict_image_model(
                     optimizer.zero_grad(set_to_none=True)
                     with amp_ctx:
                         if head_type == "multitask":
-                            out = model(images, targets=targets_bin)
+                            if isinstance(model, PFRMLFusionModel):
+                                out = model(
+                                    images,
+                                    metadata=batch.metadata.to(device),
+                                    targets=targets_bin,
+                                    metadata_off=metadata_off,
+                                )
+                            else:
+                                out = model(images, targets=targets_bin)
                             loss, _ = loss_fn(out, targets_bin, targets_aqi)
                         else:
                             out = model(images)
@@ -785,7 +924,7 @@ def _train_predict_image_model(
                     head_type == "multitask"
                     and warmup_epochs > 0
                     and epoch == warmup_epochs
-                    and isinstance(model, PFRMLModel)
+                    and isinstance(model, (PFRMLModel, PFRMLFusionModel))
                     and model.head.use_prototypes
                 ):
                     init_pfrml_prototypes_from_train_fold(
@@ -805,6 +944,7 @@ def _train_predict_image_model(
                     device=device,
                     aqi_scale=aqi_scale,
                     use_amp=use_amp,
+                    metadata_off=metadata_off,
                 )
                 sync_device(device)
                 ep_sec = time.perf_counter() - t0
@@ -830,10 +970,20 @@ def _train_predict_image_model(
                 writer.writerow(row)
                 cf.flush()
 
+                cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                last_epoch = epoch
+                last_val_loss = val_loss
+                last_ep_mae = float(val_metrics["mae"])
+                last_state = cur_state
+                last_preds = val_preds.copy()
+                last_pred_bins = val_pred_bins.copy() if val_pred_bins is not None else None
+                last_proto_var = val_proto_var
+
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_epoch = epoch
-                    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                    best_ep_mae = float(val_metrics["mae"])
+                    best_state = cur_state
                     best_preds = val_preds.copy()
                     best_pred_bins = val_pred_bins.copy() if val_pred_bins is not None else None
                     best_proto_var = val_proto_var
@@ -845,15 +995,21 @@ def _train_predict_image_model(
                         "epochs": total_epochs,
                         "model_name": model_name,
                         "head_type": head_type,
-                        "model_state": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                        "model_state": cur_state,
                         "optimizer_state": optimizer.state_dict(),
                         "scheduler_state": scheduler.state_dict(),
                         "best_val_loss": best_val_loss,
                         "best_epoch": best_epoch,
+                        "best_ep_mae": best_ep_mae,
                         "best_state": best_state,
                         "best_preds": best_preds,
                         "best_pred_bins": best_pred_bins,
                         "best_proto_var": best_proto_var,
+                        "last_val_loss": last_val_loss,
+                        "last_ep_mae": last_ep_mae,
+                        "last_preds": last_preds,
+                        "last_pred_bins": last_pred_bins,
+                        "last_proto_var": last_proto_var,
                         "epoch_times": epoch_times,
                         "rng_python": random.getstate(),
                         "rng_numpy": np.random.get_state(),
@@ -879,38 +1035,125 @@ def _train_predict_image_model(
                     )
 
     assert best_state is not None and best_preds is not None
-    _atomic_torch_save(
-        {
-            "state_dict": best_state,
-            "model_name": model_name,
-            "head_type": head_type,
-            "seed": seed,
-            "epochs": total_epochs,
-            "best_epoch": best_epoch,
-            "best_val_loss": best_val_loss,
-            "best_proto_var": best_proto_var,
-            "max_samples": max_samples,
-        },
-        ckpt_dir / "model.pt",
-    )
-    npz_payload: Dict[str, Any] = {"y_pred": best_preds}
-    if best_pred_bins is not None:
-        npz_payload["y_pred_bin"] = best_pred_bins
-    if best_proto_var is not None:
-        npz_payload["proto_mix_var"] = np.array(best_proto_var, dtype=np.float64)
+    assert last_state is not None and last_preds is not None
+    mean_ep_s = float(np.mean(epoch_times)) if epoch_times else 0.0
+
+    if is_e5:
+        # Step 5a Policy A: E5_ runs report LAST epoch and save two checkpoints (best-loss & last-epoch)
+        _atomic_torch_save(
+            {
+                "state_dict": best_state,
+                "checkpoint_type": "best_loss",
+                "model_name": model_name,
+                "head_type": head_type,
+                "seed": seed,
+                "epochs": total_epochs,
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val_loss,
+                "best_ep_mae": best_ep_mae,
+                "best_proto_var": best_proto_var,
+                "max_samples": max_samples,
+            },
+            ckpt_dir / "best_model.pt",
+        )
+        _atomic_torch_save(
+            {
+                "state_dict": last_state,
+                "checkpoint_type": "last_epoch",
+                "model_name": model_name,
+                "head_type": head_type,
+                "seed": seed,
+                "epochs": total_epochs,
+                "epoch": last_epoch,
+                "val_loss": last_val_loss,
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val_loss,
+                "best_ep_mae": best_ep_mae,
+                "last_proto_var": last_proto_var,
+                "max_samples": max_samples,
+            },
+            ckpt_dir / "model.pt",
+        )
+        reported_preds = last_preds
+        reported_pred_bins = last_pred_bins
+        reported_proto_var = last_proto_var
+        notes = (
+            f"last_ep={last_epoch}/{total_epochs},val_loss={last_val_loss:.4f},"
+            f"best_ep={best_epoch}/{total_epochs},best_ep_mae={best_ep_mae:.2f},"
+            f"bs={int(cfg.train.batch_size)},lr={cfg.train.lr:g},amp={use_amp},"
+            f"sec_per_ep={mean_ep_s:.2f}"
+        )
+    else:
+        # Old experiments keep their old behaviour (best-loss checkpoint & reporting)
+        _atomic_torch_save(
+            {
+                "state_dict": best_state,
+                "model_name": model_name,
+                "head_type": head_type,
+                "seed": seed,
+                "epochs": total_epochs,
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val_loss,
+                "best_proto_var": best_proto_var,
+                "max_samples": max_samples,
+            },
+            ckpt_dir / "model.pt",
+        )
+        reported_preds = best_preds
+        reported_pred_bins = best_pred_bins
+        reported_proto_var = best_proto_var
+        notes = (
+            f"best_ep={best_epoch}/{total_epochs},val_loss={best_val_loss:.4f},"
+            f"bs={int(cfg.train.batch_size)},lr={cfg.train.lr:g},amp={use_amp},"
+            f"sec_per_ep={mean_ep_s:.2f}"
+        )
+
+    if head_type == "multitask":
+        pv = reported_proto_var if reported_proto_var is not None else 0.0
+        cls_src = "logits" if reported_pred_bins is not None else "reg_pred_bins"
+        notes += f",reg_src=reg_pred*aqi_scale,cls_src={cls_src},proto_mix_var={pv:.6f}"
+    if is_fusion and metadata_off:
+        notes += ",metadata_off=True"
+
+    npz_payload: Dict[str, Any] = {"y_pred": reported_preds}
+    if reported_pred_bins is not None:
+        npz_payload["y_pred_bin"] = reported_pred_bins
+    if reported_proto_var is not None:
+        npz_payload["proto_mix_var"] = np.array(reported_proto_var, dtype=np.float64)
     _atomic_npz_save(ckpt_dir / "preds.npz", **npz_payload)
 
-    mean_ep_s = float(np.mean(epoch_times)) if epoch_times else 0.0
-    notes = (
-        f"best_ep={best_epoch}/{total_epochs},val_loss={best_val_loss:.4f},"
-        f"bs={int(cfg.train.batch_size)},lr={cfg.train.lr:g},amp={use_amp},"
-        f"sec_per_ep={mean_ep_s:.2f}"
-    )
-    if head_type == "multitask":
-        pv = best_proto_var if best_proto_var is not None else 0.0
-        cls_src = "logits" if best_pred_bins is not None else "reg_pred_bins"
-        notes += f",reg_src=reg_pred*aqi_scale,cls_src={cls_src},proto_mix_var={pv:.6f}"
-    return best_preds, best_pred_bins, notes
+    meta_off_result: Optional[Tuple[np.ndarray, Optional[np.ndarray], str]] = None
+    if is_e5 and is_fusion and not metadata_off:
+        model.load_state_dict(last_state)
+        mo_loss, mo_preds, mo_pred_bins, mo_proto_var = _evaluate_image_model(
+            model=model,
+            loader=eval_loader,
+            head_type=head_type,
+            loss_fn=loss_fn,
+            device=device,
+            aqi_scale=aqi_scale,
+            use_amp=use_amp,
+            metadata_off=True,
+        )
+        mo_pv = mo_proto_var if mo_proto_var is not None else 0.0
+        mo_cls_src = "logits" if mo_pred_bins is not None else "reg_pred_bins"
+        mo_notes = (
+            f"last_ep={last_epoch}/{total_epochs},val_loss={mo_loss:.4f},"
+            f"best_ep={best_epoch}/{total_epochs},best_ep_mae={best_ep_mae:.2f},"
+            f"bs={int(cfg.train.batch_size)},lr={cfg.train.lr:g},amp={use_amp},"
+            f"sec_per_ep={mean_ep_s:.2f},"
+            f"reg_src=reg_pred*aqi_scale,cls_src={mo_cls_src},proto_mix_var={mo_pv:.6f},"
+            f"metadata_off=True"
+        )
+        mo_payload: Dict[str, Any] = {"y_pred": mo_preds}
+        if mo_pred_bins is not None:
+            mo_payload["y_pred_bin"] = mo_pred_bins
+        if mo_proto_var is not None:
+            mo_payload["proto_mix_var"] = np.array(mo_proto_var, dtype=np.float64)
+        _atomic_npz_save(ckpt_dir / "preds_meta_off.npz", **mo_payload)
+        meta_off_result = (mo_preds, mo_pred_bins, mo_notes)
+
+    return reported_preds, reported_pred_bins, notes, meta_off_result
 
 
 def run_single_split(
@@ -935,11 +1178,13 @@ def run_single_split(
     output_csv: Optional[Path],
     resume: bool = False,
     max_samples: Optional[int] = None,
-) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, float]]:
+    metadata_off: bool = False,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, float], Optional[Dict[str, float]]]:
     y_train = train_df["pm25"].to_numpy(dtype=np.float64)
     y_eval = eval_df["pm25"].to_numpy(dtype=np.float64)
     y_eval_bin = eval_df["aqi_bin"].to_numpy(dtype=np.int64)
     pred_bins: Optional[np.ndarray] = None
+    meta_off_result: Optional[Tuple[np.ndarray, Optional[np.ndarray], str]] = None
 
     if model_name == "median":
         preds, pred_bins, notes = _train_predict_median(y_train, len(eval_df), ckpt_dir)
@@ -953,7 +1198,7 @@ def run_single_split(
             train_meta, y_train, eval_meta, cfg, seed, device, ckpt_dir
         )
     elif model_name in IMAGE_MODEL_NAMES:
-        preds, pred_bins, notes = _train_predict_image_model(
+        preds, pred_bins, notes, meta_off_result = _train_predict_image_model(
             model_name=model_name,
             experiment_id=experiment_id,
             group_mode=group_mode,
@@ -968,16 +1213,22 @@ def run_single_split(
             ckpt_dir=ckpt_dir,
             resume=resume,
             max_samples=max_samples,
+            metadata_off=metadata_off,
         )
     else:
         raise ValueError(f"Unsupported model={model_name!r}")
 
+    rec_exp_id = (
+        f"{experiment_id}_meta_off"
+        if (metadata_off and not experiment_id.endswith("_meta_off"))
+        else experiment_id
+    )
     metrics = evaluate_predictions_and_record(
         y_true_pm25=y_eval,
         y_pred_pm25=preds,
         y_true_bin=y_eval_bin,
         y_pred_bin=pred_bins,
-        experiment_id=experiment_id,
+        experiment_id=rec_exp_id,
         model=model_name,
         seed=seed,
         group_mode=group_mode,
@@ -987,11 +1238,29 @@ def run_single_split(
         notes=notes,
     )
 
+    meta_off_metrics: Optional[Dict[str, float]] = None
+    if meta_off_result is not None:
+        mo_preds, mo_pred_bins, mo_notes = meta_off_result
+        meta_off_metrics = evaluate_predictions_and_record(
+            y_true_pm25=y_eval,
+            y_pred_pm25=mo_preds,
+            y_true_bin=y_eval_bin,
+            y_pred_bin=mo_pred_bins,
+            experiment_id=f"{experiment_id}_meta_off",
+            model=model_name,
+            seed=seed,
+            group_mode=group_mode,
+            eval_split=eval_split,
+            fold=fold_label,
+            output_csv=output_csv,
+            notes=mo_notes,
+        )
+
     last_ckpt_path = ckpt_dir / "last.pt"
     if last_ckpt_path.exists():
         last_ckpt_path.unlink()
 
-    return preds, pred_bins, metrics
+    return preds, pred_bins, metrics, meta_off_metrics
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -1026,6 +1295,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--reg-loss", type=str, default=None, choices=["mse", "huber"])
+    parser.add_argument("--modality-dropout", type=float, default=None)
+    parser.add_argument("--metadata-off", action="store_true", help="Zero metadata embedding m during evaluation.")
     parser.add_argument("--use-amp", action="store_true", help="Enable fp16 autocast on MPS/CUDA.")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
@@ -1067,6 +1338,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         overrides["data.num_workers"] = args.num_workers
     if args.reg_loss is not None:
         overrides["loss.reg_loss"] = args.reg_loss
+    if args.modality_dropout is not None:
+        overrides["pfrml.modality_dropout"] = float(args.modality_dropout)
     if args.use_amp:
         overrides["train.use_amp"] = True
     if args.device is not None:
@@ -1076,17 +1349,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     model_name = cfg.model.name
     if args.experiment_id:
         experiment_id = args.experiment_id
+    elif model_name in FUSION_MODEL_SPECS:
+        experiment_id = default_fusion_experiment_id(model_name)
     elif model_name in PFRML_MODEL_SPECS:
-        experiment_id = default_pfrml_experiment_id(model_name, args.config)
+        experiment_id = default_pfrml_experiment_id(
+            model_name, args.config, reg_input=cfg.pfrml.reg_input
+        )
     else:
         experiment_id = model_name
 
     seed = cfg.seed
     group_mode = cfg.data.group_mode
     if args.output_csv is None:
-        default_csv_name = (
-            "step4_results.csv" if model_name in PFRML_MODEL_SPECS else "step3_results.csv"
-        )
+        if experiment_id.startswith("E5_") or model_name in FUSION_MODEL_SPECS:
+            default_csv_name = "step5_results.csv"
+        elif model_name in PFRML_MODEL_SPECS:
+            default_csv_name = "step4_results.csv"
+        else:
+            default_csv_name = "step3_results.csv"
         output_csv: Optional[Path] = Path(cfg.outputs_dir) / "results" / default_csv_name
     elif args.output_csv == "":
         output_csv = None
@@ -1126,7 +1406,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
         sub_train_df = train_df.iloc[full_tr_idx]
         sub_test_df = test_df.iloc[full_te_idx]
-        preds, pred_bins, m_test = run_single_split(
+        preds, pred_bins, m_test, m_test_mo = run_single_split(
             model_name=model_name,
             experiment_id=experiment_id,
             cfg=cfg,
@@ -1147,8 +1427,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             output_csv=output_csv,
             resume=args.resume,
             max_samples=args.max_samples,
+            metadata_off=bool(args.metadata_off),
         )
         print(f"[{experiment_id} | test (n={len(sub_test_df)})] {format_metrics_oneline(m_test)}")
+        if m_test_mo is not None:
+            print(
+                f"[{experiment_id}_meta_off | test (n={len(sub_test_df)})] "
+                f"{format_metrics_oneline(m_test_mo)}"
+            )
 
         _, gt25_mask = compute_test_distance_mask(sub_train_df, sub_test_df, min_km=25.0)
         if np.any(gt25_mask):
@@ -1181,6 +1467,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     fold_indices = list(range(len(folds))) if args.fold == "all" else [int(args.fold)]
 
     fold_metrics: List[Dict[str, float]] = []
+    fold_meta_off_metrics: List[Dict[str, float]] = []
     for k in fold_indices:
         tr_idx, va_idx = folds[k]
         if args.max_samples is not None:
@@ -1188,7 +1475,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             n_va = max(1, args.max_samples - n_tr)
             tr_idx = _subsample_indices(tr_idx, n_tr)
             va_idx = _subsample_indices(va_idx, n_va)
-        _, _, m = run_single_split(
+        _, _, m, m_mo = run_single_split(
             model_name=model_name,
             experiment_id=experiment_id,
             cfg=cfg,
@@ -1209,9 +1496,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             output_csv=output_csv,
             resume=args.resume,
             max_samples=args.max_samples,
+            metadata_off=bool(args.metadata_off),
         )
         fold_metrics.append(m)
-        print(f"[{experiment_id} | {group_mode} | fold {k}] {format_metrics_oneline(m)}")
+        rec_id = (
+            f"{experiment_id}_meta_off"
+            if (args.metadata_off and not experiment_id.endswith("_meta_off"))
+            else experiment_id
+        )
+        print(f"[{rec_id} | {group_mode} | fold {k}] {format_metrics_oneline(m)}")
+        if m_mo is not None:
+            fold_meta_off_metrics.append(m_mo)
+            print(
+                f"[{experiment_id}_meta_off | {group_mode} | fold {k}] "
+                f"{format_metrics_oneline(m_mo)}"
+            )
 
     if len(fold_metrics) > 1:
         summary = summarize_fold_metrics(fold_metrics)
@@ -1246,6 +1545,42 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             )
         print(
             f"[{experiment_id} | {group_mode} | CV mean] {format_metrics_oneline(mean_dict)}"
+        )
+
+    if len(fold_meta_off_metrics) > 1:
+        mo_summary = summarize_fold_metrics(fold_meta_off_metrics)
+        mo_mean_dict = {k: mo_summary[k][0] for k in METRIC_ORDER}
+        mo_std_dict = {k: mo_summary[k][1] for k in METRIC_ORDER}
+        if output_csv is not None:
+            append_result_row(
+                output_csv,
+                build_result_row(
+                    experiment_id=f"{experiment_id}_meta_off",
+                    model=model_name,
+                    seed=seed,
+                    group_mode=group_mode,
+                    eval_split="val",
+                    fold="cv_mean",
+                    n_samples=len(train_df),
+                    metrics=mo_mean_dict,
+                ),
+            )
+            append_result_row(
+                output_csv,
+                build_result_row(
+                    experiment_id=f"{experiment_id}_meta_off",
+                    model=model_name,
+                    seed=seed,
+                    group_mode=group_mode,
+                    eval_split="val",
+                    fold="cv_std",
+                    n_samples=len(train_df),
+                    metrics=mo_std_dict,
+                ),
+            )
+        print(
+            f"[{experiment_id}_meta_off | {group_mode} | CV mean] "
+            f"{format_metrics_oneline(mo_mean_dict)}"
         )
 
 

@@ -19,7 +19,7 @@ data:
   horizontal_flip_prob: 0.5
 
 model:
-  name: "mdnet_t_reg"            # Step 2: median, ridge_haze, metadata_mlp; Step 3: resnet18_scratch, resnet18_pretrained, mobilenetv3_s_pretrained, mobilenetv3_s_md_neck, mdnet_t_reg, mdnet_t_cls; Step 4: pfrml_mobilenetv3_s, pfrml_resnet18, pfrml_mdnet_t, pfrml_e3b
+  name: "mdnet_t_reg"            # Step 2: median, ridge_haze, metadata_mlp; Step 3: resnet18_scratch, resnet18_pretrained, mobilenetv3_s_pretrained, mobilenetv3_s_md_neck, mdnet_t_reg, mdnet_t_cls; Step 4: pfrml_mobilenetv3_s, pfrml_resnet18, pfrml_mdnet_t, pfrml_e3b; Step 5: fusion_r1_mobilenetv3_s, fusion_full_mobilenetv3_s
   head_type: "regression"        # "regression", "classification", or "multitask"
   num_classes: 6
   metadata_dim: 5
@@ -69,5 +69,8 @@ pfrml:
   use_prototypes: true
   proto_ema_decay: 0.9
   proto_tau_init: 0.2
+  reg_input: "chi_proto"
   reg_hidden_dims: [256]
   reg_dropout: 0.1
+  modality_dropout: 0.3
+  aux_loss_weight: 0.5

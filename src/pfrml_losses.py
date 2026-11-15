@@ -1,4 +1,4 @@
-"""Multitask loss wrapper for PFRML with Toggle #3 long-tail class weighting.
+"""Multitask loss wrapper for PFRML with Toggle #3 long-tail class weighting and Step 5 vision aux loss.
 
 Imports `HybridMultitaskLoss`, `RegressionLoss`, and `compute_class_weights`
 from `src.losses` without modifying `src/losses.py`.
@@ -15,6 +15,9 @@ Citations:
   Paper 14 (Byler et al., WACVW 2025, Sec. 4.1), Paper 6 (Mohan et al.,
   IEEE RAIT 2025, WERCS) — dampened inverse-frequency weights w_k ~ N_k^{-gamma}
   computed strictly inside each training fold.
+- Step 5 Multimodal Fusion (`aux_loss_weight = 0.5`): Auxiliary vision-only
+  regression loss on `chi` alone (`L_total = L_main + aux_loss_weight * L_aux`),
+  whose gradient flows into the image backbone and never into `MetadataMLP`.
 """
 
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
@@ -27,7 +30,7 @@ from src.losses import HybridMultitaskLoss, RegressionLoss, compute_class_weight
 
 
 class PFRMLMultitaskLoss(nn.Module):
-    """Wrapper around `src.losses.HybridMultitaskLoss` supporting PFRML outputs, R1, and Toggle #3."""
+    """Wrapper around `src.losses.HybridMultitaskLoss` supporting PFRML outputs, R1, Toggle #3, and Fusion Aux Loss."""
 
     def __init__(
         self,
@@ -42,12 +45,14 @@ class PFRMLMultitaskLoss(nn.Module):
         class_weights: Optional[torch.Tensor] = None,
         train_targets_or_counts: Optional[Union[np.ndarray, torch.Tensor, Sequence[int]]] = None,
         use_prototypes: bool = True,
+        aux_loss_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.use_prototypes = bool(use_prototypes)
         self.use_class_weights = bool(use_class_weights) and self.use_prototypes
         self.class_weight_gamma = float(class_weight_gamma)
         self.num_classes = int(num_classes)
+        self.aux_loss_weight = float(aux_loss_weight)
 
         resolved_weights: Optional[torch.Tensor] = None
         if self.use_class_weights:
@@ -83,6 +88,11 @@ class PFRMLMultitaskLoss(nn.Module):
                 huber_delta=huber_delta,
             )
 
+        self.aux_reg_loss = RegressionLoss(
+            loss_type=reg_loss_type,
+            huber_delta=huber_delta,
+        )
+
     @classmethod
     def from_loss_config(
         cls,
@@ -91,6 +101,7 @@ class PFRMLMultitaskLoss(nn.Module):
         class_weights: Optional[torch.Tensor] = None,
         num_classes: int = 6,
         use_prototypes: bool = True,
+        aux_loss_weight: float = 0.0,
     ) -> "PFRMLMultitaskLoss":
         """Construct `PFRMLMultitaskLoss` directly from `src.config.LossConfig`."""
         return cls(
@@ -105,6 +116,7 @@ class PFRMLMultitaskLoss(nn.Module):
             class_weights=class_weights,
             train_targets_or_counts=train_targets_or_counts,
             use_prototypes=use_prototypes,
+            aux_loss_weight=aux_loss_weight,
         )
 
     def forward(
@@ -113,27 +125,39 @@ class PFRMLMultitaskLoss(nn.Module):
         target_bins: torch.Tensor,
         target_aqi_scaled: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Compute `L = L_cls + beta * L_reg` (or `L = L_reg` when `use_prototypes=False`)."""
+        """Compute `L = L_cls + beta * L_reg (+ aux_loss_weight * L_aux)`."""
+        aux_reg_pred: Optional[torch.Tensor] = None
         if isinstance(outputs, tuple):
             logits, reg_pred = outputs
         elif isinstance(outputs, dict):
             logits, reg_pred = outputs.get("logits"), outputs["reg_pred"]
+            aux_reg_pred = outputs.get("aux_reg_pred")
         else:
             logits, reg_pred = getattr(outputs, "logits", None), outputs.reg_pred
+            aux_reg_pred = getattr(outputs, "aux_reg_pred", None)
 
         if not self.use_prototypes:
             assert self.reg_only_loss is not None
             reg_l = self.reg_only_loss(reg_pred, target_aqi_scaled)
-            return reg_l, {
+            total_l = reg_l
+            parts: Dict[str, float] = {
                 "total_loss": float(reg_l.detach().item()),
                 "cls_loss": 0.0,
                 "reg_loss": float(reg_l.detach().item()),
             }
+        else:
+            assert self.hybrid_loss is not None and logits is not None
+            total_l, parts = self.hybrid_loss(
+                logits=logits,
+                reg_preds=reg_pred,
+                target_bins=target_bins,
+                target_aqi_scaled=target_aqi_scaled,
+            )
 
-        assert self.hybrid_loss is not None and logits is not None
-        return self.hybrid_loss(
-            logits=logits,
-            reg_preds=reg_pred,
-            target_bins=target_bins,
-            target_aqi_scaled=target_aqi_scaled,
-        )
+        if aux_reg_pred is not None and self.aux_loss_weight > 0.0:
+            aux_l = self.aux_reg_loss(aux_reg_pred, target_aqi_scaled)
+            total_l = total_l + self.aux_loss_weight * aux_l
+            parts["aux_reg_loss"] = float(aux_l.detach().item())
+            parts["total_loss"] = float(total_l.detach().item())
+
+        return total_l, parts

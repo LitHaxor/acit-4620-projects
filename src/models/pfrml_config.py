@@ -1,4 +1,4 @@
-"""Configuration dataclass and YAML builder for PFRML Step 4 configs.
+"""Configuration dataclass and YAML builder for PFRML Step 4 & Step 5 configs.
 
 Re-exports `PFRMLHeadConfig` from `src.config` and provides `PFRMLFullConfig`,
 `load_pfrml_config`, and `build_pfrml_from_config`.
@@ -63,6 +63,7 @@ def build_pfrml_from_config(
         use_prototypes=p.use_prototypes,
         proto_ema_decay=p.proto_ema_decay,
         proto_tau_init=p.proto_tau_init,
+        reg_input=p.reg_input,
         reg_hidden_dims=p.reg_hidden_dims,
         reg_dropout=p.reg_dropout,
     )

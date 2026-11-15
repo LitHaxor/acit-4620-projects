@@ -21,6 +21,11 @@ from src.models.dcm import (
     PrototypeGuidedRegressionHead,
     SingleFeatureAdapter,
 )
+from src.models.fusion import (
+    FUSION_MODEL_NAMES,
+    FUSION_MODEL_SPECS,
+    PFRMLFusionModel,
+)
 from src.models.mdnet import (
     LayerNorm2d,
     MDBlock,
@@ -66,6 +71,9 @@ __all__ = [
     "PFRMLHead",
     "BackboneTapWrapper",
     "PFRMLModel",
+    "FUSION_MODEL_SPECS",
+    "FUSION_MODEL_NAMES",
+    "PFRMLFusionModel",
     "PFRMLHeadConfig",
     "PFRMLFullConfig",
     "load_pfrml_config",
