@@ -1,3 +1,5 @@
+> Agent-written notes created during development. Paper citations, section numbers, and equation references were written by the coding agent and are not all independently verified against the paper text.
+
 # Related Work Notes (`papers/markdown/` — 17 Toolbox Papers)
 
 This file catalogs the 17 related papers in `papers/markdown/` (excluding the two spine papers **PFRML** and **MDNet**), processed one paper at a time.

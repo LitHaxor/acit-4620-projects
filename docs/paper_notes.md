@@ -1,3 +1,5 @@
+> Agent-written notes created during development. Paper citations, section numbers, and equation references were written by the coding agent and are not all independently verified against the paper text.
+
 # Spine Paper Notes (`PFRML` & `MDNet`)
 
 > Distilled from [`docs/PLAN.md`](PLAN.md) (Sections 1, 2 & 7.1). Both papers form the architectural spine of this project.

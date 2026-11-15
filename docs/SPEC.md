@@ -1,3 +1,5 @@
+> Design specification written during development. Paper section and equation references were written by the coding agent and are not all verified against the paper text. docs/EXPERIMENTS.md and results/REPORT_NUMBERS.md are the authoritative record of what was run.
+
 # Technical Specification (`SPEC.md`)
 
 ## 1. Idea sources
