@@ -10,4 +10,4 @@ __pycache__/
 checkpoints/
 .python-version
 skills/
-reports/build
+docs/
