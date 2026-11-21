@@ -11,3 +11,15 @@ checkpoints/
 .python-version
 skills/
 docs/
+
+# Local Python env
+.venv/
+
+# Jupyter state
+.ipynb_checkpoints/
+.jupyter/
+.jupyter_ystore.db
+
+# Notebook-generated artifacts (anchored so src/features/ stays tracked)
+/features/
+*.pt
