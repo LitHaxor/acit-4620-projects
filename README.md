@@ -14,14 +14,14 @@ We compare nine model families under this protocol: a constant median baseline, 
 
 Summary of findings:
 
-| Model | Input | Full test MAE | Unseen (>25 km) MAE | fp16 size |
-| :--- | :--- | :---: | :---: | :---: |
-| Fusion R1 | photo, GPS, month | 35.6 | 39.3 | 3.85 MB |
-| Metadata MLP | GPS, month | 36.8 | 48.6 | 0.005 MB |
-| MobileNetV3-Small | photo | 41.8 | 39.2 | 2.90 MB |
-| PFRML full | photo | 44.1 | 46.5 | 4.02 MB |
-| ResSE | photo | 45.1 | 43.5 | 2.28 MB |
-| HazeCNN | photo | 51.4 | 45.7 | 1.14 MB |
+| Model             | Input             | Full test MAE | Unseen (>25 km) MAE | fp16 size |
+| :---------------- | :---------------- | :-----------: | :-----------------: | :-------: |
+| Fusion R1         | photo, GPS, month |     35.6      |        39.3         |  3.85 MB  |
+| Metadata MLP      | GPS, month        |     36.8      |        48.6         | 0.005 MB  |
+| MobileNetV3-Small | photo             |     41.8      |        39.2         |  2.90 MB  |
+| PFRML full        | photo             |     44.1      |        46.5         |  4.02 MB  |
+| ResSE             | photo             |     45.1      |        43.5         |  2.28 MB  |
+| HazeCNN           | photo             |     51.4      |        45.7         |  1.14 MB  |
 
 Fusion R1 achieves the lowest offline error (35.6 AQI MAE, $R^2 = 0.60$, 90% within one EPA category) and stays within 0.3 MAE across training seeds. Location metadata alone nearly matches it near seen stations (36.8) but breaks down beyond 25 km (48.6, $R^2 = -0.05$), where Fusion R1 and image-only MobileNetV3-Small hold steady. On the paired 200-photo sample, Claude Opus 5.5 (28.9 MAE) and Gemini 4 Argon (29.7 MAE) reach comparable accuracy to Fusion R1 (31.9 MAE, differences not statistically significant), so running locally is motivated by privacy, offline availability, low latency, and zero per-query cost. In fp16, Fusion R1 takes 3.85 MB on disk and under 30 MB of working memory, fitting CPU-only phones with at least 3 GB of RAM. Every tested model still underestimates hazardous air quality (AQI > 300).
 
@@ -51,14 +51,6 @@ Run the notebooks in order to reproduce the data audit, feature analysis, model 
 5. `5.frontier-and-mobile-deployment.ipynb` for Claude/Gemini agent queries, Fusion R1 head analysis, occlusion maps, model footprints, fp16 checks, and final report figures.
 
 Notebook 5 reuses the 800 saved responses in `results/frontier/predictions.jsonl` and only invokes the `claude` or `agy` CLIs if entries are missing.
-
-### Building the report PDF
-
-PDFs are gitignored. Compile the report locally with Tectonic:
-
-```bash
-cd report && tectonic final_report.tex
-```
 
 ### Command-line scripts
 
