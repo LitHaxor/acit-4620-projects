@@ -1,0 +1,17 @@
+comparison,photos,MAE difference,ci_low,ci_high,significant,subset
+Claude Opus 5.5 (photo + GPS + month)  minus  Claude Opus 5.5 (photo only),200,-3.74,-7.0735304035068,-0.26079236211901613,True,
+Gemini 4 Argon (photo + GPS + month)  minus  Gemini 4 Argon (photo only),200,-10.345,-13.994931200679252,-6.317378855893189,True,
+Claude Opus 5.5 (photo only)  minus  MobileNetV3-S,200,-4.51705962896347,-11.183573922636219,0.7470240865441905,False,
+Gemini 4 Argon (photo only)  minus  MobileNetV3-S,200,2.96294037103653,-3.7334512953585235,8.559746790544626,False,
+Claude Opus 5.5 (photo only)  minus  Fusion R1,161,1.6154749260185668,-3.728441471838985,7.029442652042318,False,<=25 km
+Claude Opus 5.5 (photo only)  minus  Fusion R1,39,-3.151807711674617,-28.260765230678288,17.634425140142433,False,>25 km
+Claude Opus 5.5 (photo + GPS + month)  minus  Fusion R1,161,-1.5460157572112467,-6.067780753418251,2.9247879546683273,False,<=25 km
+Claude Opus 5.5 (photo + GPS + month)  minus  Fusion R1,39,-9.280012839879745,-30.743483685575182,6.448716713905334,False,>25 km
+Gemini 4 Argon (photo only)  minus  Fusion R1,161,8.621686106142791,2.5474527723125315,14.850669032724548,True,<=25 km
+Gemini 4 Argon (photo only)  minus  Fusion R1,39,6.284089724222819,-20.431997786462304,28.115114702608274,False,>25 km
+Gemini 4 Argon (photo + GPS + month)  minus  Fusion R1,161,-1.1547114093851598,-5.811002698391297,3.571358439200341,False,<=25 km
+Gemini 4 Argon (photo + GPS + month)  minus  Fusion R1,39,-6.408217968084873,-28.678396442021498,10.83707511576395,False,>25 km
+MobileNetV3-S  minus  Fusion R1,161,6.660683812561983,1.7677271694791097,12.195257239217323,True,<=25 km
+MobileNetV3-S  minus  Fusion R1,39,-0.8150565563104121,-17.966511511802672,11.725174867984853,False,>25 km
+Metadata MLP  minus  Fusion R1,161,-1.856071047160936,-5.596177374412982,2.114482056883848,False,<=25 km
+Metadata MLP  minus  Fusion R1,39,7.129630871308156,0.27964130727620995,13.22872485367457,True,>25 km
