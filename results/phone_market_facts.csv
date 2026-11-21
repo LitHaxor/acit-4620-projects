@@ -1,0 +1,19 @@
+quantity,value,source,date
+people 10+ owning a mobile phone,84%,ITU Facts and Figures 2026,Oct 2026
+people using their own smartphone for mobile internet,4.6 bn (56%),GSMA State of Mobile Internet Connectivity 2026,Sep 2026
+smartphone subscriptions / all mobile subscriptions,7.41 bn / 8.83 bn,Ericsson Mobility Report Nov 2025,Nov 2025
+share of active smartphones that are iPhones,~25%,"Counterpoint, active installed base",Feb 2026
+mobile web page views Android / iOS,72.4% / 27.6%,StatCounter,Oct 2026
+average RAM of NEW phones sold,8.4 GB,Counterpoint,Dec 2025
+RAM of AnTuTu-benchmarked phones <=4 / 6 / 8 / 12 / 16+ GB,7.6 / 9.5 / 40.0 / 35.8 / 6.2 %,AnTuTu Q2 2026 (enthusiast-biased),Jul 2026
+smartphone replacement cycle,43 months,Counterpoint,Nov 2025
+smartphone shipments Q3 2026 (memory price shock),-22% year on year,IDC via FoneArena,Oct 2026
+Android 8.1+ / 10+ / 11+ / 12+ / 13+ / 14+,98.6 / 94.0 / 88.3 / 77.8 / 68.2 / 56.4 %,"Google Play devices, heise",Oct 2026
+"iPhones on iOS 26 (A13 or newer, Neural Engine)",79%,Apple App Store support,Jun 2026
+Play devices with Vulkan 1.1+ / OpenGL ES 3.2,88.8% / 98.2%,Android distribution dashboard,Nov 2025
+minimum Java heap per app (xxhdpi / xxxhdpi screens),128 / 256 MB,Android 16 CDD 3.7,2026
+app memory limit on a 4 GB phone (Android 17 memory limiter),"2,048 MiB",AOSP memory limiter,2026
+LiteRT minimum Android SDK (CPU) / NPU delegate,API 21-24 / API 31 + arm64,Google LiteRT docs,2026
+"MobileNetV3-Small fp32 latency, one big core, Pixel 1",15.8 ms,"Howard et al., ICCV 2019",2019
+AI Benchmark score Snapdragon 680 vs Snapdragon 8 Elite,"92 vs 20,726",ETH Zurich AI Benchmark ranking,Nov 2026
+a phone at the 75th percentile of performance,"Galaxy A24 (Helio G99, 2x A76 + 6x A55, 4-8 GB)","Russell, Performance Inequality Gap 2026",Nov 2025

@@ -21,6 +21,12 @@ from scripts.experiments.queue_fusion_final import (
 )
 
 
+def _local_or_tracked(local: str, tracked: str) -> Path:
+    """Prefer a fresh local run in outputs/ (gitignored); fall back to the tracked results/ snapshot."""
+    local_path = Path(local)
+    return local_path if local_path.exists() else Path(tracked)
+
+
 def test_choose_epochs_cma3_and_min_epoch_floor() -> None:
     """Verify 3-epoch centered moving average selection and the N >= 6 floor."""
     # Construct 5 synthetic folds where epochs 2-4 have artificially low MAE (10.0),
@@ -49,10 +55,10 @@ def test_choose_epochs_cma3_and_min_epoch_floor() -> None:
     assert np.isclose(row7["cma3_mae"], (46.0 + 44.0 + 45.0) / 3.0)
 
     # Also verify real E5_fusion_r1_p00 curves give N = 7
-    real_per_ep = load_fold_epoch_maes(Path("outputs/curves"))
+    real_per_ep = load_fold_epoch_maes(_local_or_tracked("outputs/curves", "results/curves"))
     _, real_n = compute_epoch_stats(real_per_ep, min_epoch=6)
     assert real_n == 7
-    assert read_chosen_n_from_markdown(Path("outputs/results/fusion_epoch_selection.md")) == 7
+    assert read_chosen_n_from_markdown(_local_or_tracked("outputs/results/fusion_epoch_selection.md", "results/fusion_epoch_selection.md")) == 7
 
 
 def test_fusion_final_decision_rule_and_specs(tmp_path: Path) -> None:
@@ -179,7 +185,7 @@ def test_compare_final_includes_fusion_and_meta_off(tmp_path: Path) -> None:
     assert "`F_FUSION_R1_meta_off`" in md
 
     # Also verify real final_comparison.md has Section 3 (>25 km paired bootstrap differences)
-    real_fc = Path("outputs/results/final_comparison.md").read_text(encoding="utf-8")
+    real_fc = _local_or_tracked("outputs/results/final_comparison.md", "results/final_comparison.md").read_text(encoding="utf-8")
     assert "## 3. Paired Station-Bootstrap MAE Differences — `test_gt25km` Subset" in real_fc
 
 
