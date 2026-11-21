@@ -49,27 +49,24 @@
 \maketitle
 
 \begin{abstract}
-Fine particulate matter (\pmtwofive) is monitored by sparse and expensive
-stations, yet billions of people carry a camera. This paper investigates
-whether a deep neural network small enough to run \emph{offline on an ordinary
-phone} can estimate the US EPA Air Quality Index (AQI) from a single
-street-level photograph. We train nine model families under one leakage-free
-protocol, ranging from haze-filter regression and from-scratch CNNs to
-MobileNetV3, the PFRML architecture and an image--metadata fusion network. The
-fusion model (2.0\,M parameters, 0.16\,GFLOPs, 3.8\,MB in fp16) is the most
-accurate offline model, with a test MAE of 35.6 AQI points ($R^2=0.60$) and 39.3
-in regions without training stations, and it varies by less than 0.3 across
-training seeds. A model that uses only location and month matches it near
-known stations but fails beyond 25~km. We further evaluate Claude Opus 5.5 and
-Gemini 4 as zero-shot estimators through their command-line agents. Given the
-same image, position and month, both are at least as accurate as our model (MAE
-28.9 and 29.7 against 31.9, differences not significant), and from the image
-alone Claude matches our best model. Accuracy is therefore not the argument for
-offline inference; privacy, availability without connectivity, cost and a
-latency two to three orders of magnitude lower are. Combining measured model
-footprints with public market data, we show that the fusion model fits the
-CPU-only phones with at least 3\,GB of RAM that we estimate cover about 80\% of
-camera-phone users, and needs under 30\,MB of memory.
+Ground level \pmtwofive{} monitoring stations remain scarce in many parts of
+the world, leaving most people without local air-quality readings. In this
+work, we examine whether a compact neural network running completely offline on
+an ordinary smartphone can estimate the US EPA Air Quality Index (AQI) from a
+single street-level photograph. Using the global PM25Vision dataset under a
+spatially grouped evaluation protocol, we train and compare 9 model families
+covering handcrafted haze filters, from-scratch CNNs, MobileNetV3-Small, PFRML,
+and an image metadata fusion network that pairs visual features with GPS
+coordinates and capture month. To separate genuine visual estimation from
+location memorisation, we evaluate every model in unseen regions more than 25~km
+from training stations, benchmark two frontier vision-language models (Claude
+Opus 5.5 and Gemini 4) zero-shot on a paired subset, and measure on-device
+compute and memory footprints against current smartphone hardware. Our
+MobileNetV3-based fusion network (3.8\,MB in fp16) achieves the lowest offline
+error at 35.6 AQI MAE overall and 39.3 in unseen regions, while fitting easily
+on CPU-only mainstream phones. Frontier cloud models achieve comparable
+accuracy on the paired sample, leaving privacy, offline availability, low
+latency, and zero per-query cost as the main advantages of on-device inference.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -80,306 +77,275 @@ air quality, \pmtwofive, on-device deep learning, MobileNetV3, multimodal fusion
 \section{Introduction}
 % =====================================================================
 
-Fine particulate matter (\pmtwofive) is the air pollutant with the largest
-health burden: the World Health Organization attributes millions of premature
-deaths every year to ambient air pollution, most of them in low- and
-middle-income countries \cite{who2024airquality}. Yet regulatory monitors are
-expensive and sparse. A city may have a handful of stations, and large parts of
-Africa, South Asia and Latin America have almost none. People therefore rarely
-know the air quality where they actually are.
+Ambient fine particulate matter (\pmtwofive) causes millions of premature deaths
+each year, concentrated largely in low- and middle-income countries
+\cite{who2024airquality}. Regulatory monitoring networks remain expensive to
+install and maintain, leaving entire regions of Africa, South Asia, and Latin
+America with few or no ground stations. Because airborne particles scatter and
+absorb sunlight, polluted air alters outdoor photographs by washing out colours,
+lowering contrast on distant structures, and shifting sky tones towards white or
+brown. Estimating air quality directly from a single street photograph could
+therefore provide coarse local readings wherever someone has a phone
+\cite{wangLightweightAirQuality2024,kambleMobileImageDrivenPM252025}.
 
-At the same time, almost every adult carries a camera. Particles scatter and
-absorb sunlight, so polluted air leaves a visible fingerprint in a photograph:
-distant buildings lose contrast, the sky turns from blue to white or brown, and
-colours wash out. Learning to read that fingerprint from a single street photo
-would turn every phone into a rough air-quality sensor \cite{wangLightweightAirQuality2024,kambleMobileImageDrivenPM252025}.
-
-Most published systems, however, either run large models on a server or are
-trained and tested on one fixed camera, which inflates their accuracy
+Existing image-based approaches commonly rely on server-side models or evaluate
+on images from a single stationary camera, which inflates reported accuracy
 \cite{bylerLocationGeneralizabilityImageBased2025,nathvaniHereNowEvaluating2023}.
-This paper takes the opposite stance. We ask whether a network small enough to
-run \emph{offline on an ordinary phone} can estimate the US EPA Air Quality
-Index (AQI) from one street-level photo taken anywhere in the world. Offline
-matters for four reasons: (i) the places with the worst air often have the
-weakest or most expensive mobile data; (ii) a photo plus GPS position is
-personal data, and on-device inference never uploads it; (iii) an answer in
-tens of milliseconds needs no round-trip to a server; and (iv) inference on the
-phone has no per-query cost, so the service can stay free.
+Here we focus on lightweight models that run completely offline on mainstream
+smartphones and estimate the US EPA Air Quality Index (AQI) from a single
+street-level photograph captured anywhere. Running locally keeps the photographs and
+GPS coordinates on the device, works where mobile data is unavailable or
+expensive, avoids server round-trip latency, and removes per-query operating
+costs. As a comparison point, general-purpose frontier multimodal models such as
+Claude and Gemini can also inspect a photo alongside location and date context,
+so we measure their zero-shot accuracy directly to quantify the trade-off
+between cloud and on-device inference.
 
-An alternative is to query a frontier multimodal model such as Claude or
-Gemini, which can interpret a photograph and reason about haze, location and
-season. We evaluate this alternative directly, both to quantify its accuracy
-and to establish what an offline model gives up.
-
-We address four research questions:
+We investigate four research questions:
 \begin{itemize}
   \item \textbf{RQ1}: How accurately can lightweight offline models estimate AQI
-        from a single photo, and what do handcrafted haze filters, ImageNet
-        pretraining and location/season metadata each contribute?
-  \item \textbf{RQ2}: Do the models still work in regions with no training
-        stations, or do they memorise location?
-  \item \textbf{RQ3}: How do zero-shot frontier models, driven through their
-        command-line agents, compare with our offline models given the same inputs?
-  \item \textbf{RQ4}: Which model fits the memory and compute that roughly
-        80\% of camera-phone users actually have?
+        from a single photo, and how much do handcrafted haze filters, ImageNet
+        pretraining, and location/season metadata each contribute?
+  \item \textbf{RQ2}: Do the models generalise to regions without training
+        stations, or do they rely on memorising station locations?
+  \item \textbf{RQ3}: How do zero-shot frontier models, invoked through their
+        command-line agents, compare with our offline models on identical inputs?
+  \item \textbf{RQ4}: Which model fits within the compute and memory budget of
+        the phones used by roughly 80\% of camera-phone owners?
 \end{itemize}
 
-Our contributions are:
-\begin{enumerate}
-  \item A single, leakage-controlled benchmark of nine model families on the
-        global PM25Vision dataset \cite{pm25vision2025}, from a constant
-        baseline through haze-filter regression, two from-scratch CNNs, a
-        pretrained MobileNetV3, the PFRML architecture
-        \cite{wangPrototypeFeatureRepresentationGuided2026} and an image--metadata
-        fusion network. Every model is trained once under the same protocol and
-        scored on the same 2,920 test photos with station-level bootstrap
-        confidence intervals, paired tests and repeated seeds.
-  \item Evidence that location metadata is a shortcut: a model that sees no
-        pixels matches the best model near known stations but fails beyond
-        25~km, while the fusion model keeps its accuracy there.
-  \item A head-to-head comparison of two frontier models (Claude Opus 5.5 and
-        Gemini 4) with our offline models on the same photos, under two
-        information conditions and strict leakage controls.
-  \item A deployment analysis that combines measured model footprints
-        (parameters, FLOPs, memory, latency, fp16 accuracy) with market data
-        on the phones people use, ending in a concrete recommendation.
-\end{enumerate}
-
-Section~\ref{sec:related} reviews related work. Section~\ref{sec:mobile}
-explains the constraints of phone cameras and hardware.
-Section~\ref{sec:data} describes the data, the image-processing filters and
-the evaluation protocol, and Section~\ref{sec:models} the models.
-Section~\ref{sec:frontier} defines the frontier-model experiment.
-Section~\ref{sec:results} reports results, Section~\ref{sec:deploy} turns them
-into a deployment decision, and Sections~\ref{sec:discussion}
-and~\ref{sec:conclusion} discuss limitations and conclude. Code and run
-instructions are in the Appendix.
+To answer these questions, we benchmark nine model families under one
+leakage-controlled protocol on the global PM25Vision dataset
+\cite{pm25vision2025}: a constant baseline, linear models on haze filters, two
+from-scratch CNNs, a pretrained MobileNetV3, the PFRML architecture
+\cite{wangPrototypeFeatureRepresentationGuided2026}, and an image-metadata
+fusion network. Every model is trained once with identical data splits and
+evaluated on the same 2,920 test photos using station-level bootstrap confidence
+intervals, paired tests, and repeated seeds. Alongside this benchmark, we test
+location shortcuts beyond 25~km, run paired zero-shot evaluations of Claude
+Opus 5.5 and Gemini 4 under strict leakage controls, and combine measured model
+footprints with smartphone market statistics to assess real-world deployment
+feasibility. Code and reproduction instructions appear in the Appendix.
 
 % =====================================================================
 \section{Background and Related Work}\label{sec:related}
 % =====================================================================
 
-\subsection{Why haze is visible}
-Image-based \pmtwofive{} estimation rests on the atmospheric scattering model
-used in image dehazing \cite{he2011darkchannel}. A pixel $x$ records
+\subsection{Atmospheric scattering and haze cues}
+Image-based \pmtwofive{} estimation builds on the standard atmospheric
+scattering model from image dehazing \cite{he2011darkchannel}. For a pixel $x$,
 \begin{equation}
   I(x) = J(x)\,t(x) + A\,\bigl(1 - t(x)\bigr), \qquad t(x) = e^{-\beta\, d(x)},
   \label{eq:scatter}
 \end{equation}
-where $J$ is the haze-free scene radiance, $A$ the atmospheric light, $d$ the
-distance to the object and $t$ the transmission. The extinction coefficient
-$\beta$ grows with the particle load, so more \pmtwofive{} means that distant
-objects fade towards the colour of the sky. Contrast, colour saturation and the
-``dark channel'' therefore carry information about $\beta$. Eq.~\eqref{eq:scatter}
-also shows the difficulty: the same washed-out look can come from fog, cloud,
-backlight or camera processing, and close-up scenes with small $d$ show almost
-no haze at all.
+where $J$ is the haze-free scene radiance, $A$ is the atmospheric light, $d$ is
+the distance to the object, and $t$ is the transmission. Higher particle
+concentrations increase the extinction coefficient $\beta$, causing distant
+objects to fade towards the colour of the sky. Contrast, colour saturation, and
+the dark channel therefore correlate with $\beta$. In practice, fog, heavy
+overcast skies, backlighting, and camera tone-mapping produce similar visual
+effects, while close-up scenes with small $d$ display almost no visible haze.
 
 \subsection{Image-based \pmtwofive{} and AQI estimation}
-Recent IEEE work spans three families. \emph{Handcrafted} methods extract
-haze statistics (dark channel, contrast, entropy, Gabor moments) and feed them
-to a regressor or classifier \cite{marzaguiReviewImageQuality2024,yadavRoadsideTreeImageBased2025,razimiIntegratingDeepLearning2024a}.
-They are cheap and interpretable but brittle across scenes. \emph{Deep CNNs}
-fine-tune ImageNet backbones on photos
-\cite{kumaar.bImageBasedAir2025,vermaImagebasedAirPollution2025,kaushalEvaluationDeepLearning2024,zhangAirQualityLevel2024,mohanDeepLearningBasedPM252025,chakrabortyCanImageTell2024}
-and often report accuracy above 90\%. \emph{Multimodal and multitask} models
-add metadata or sensor readings
+Recent IEEE papers in this area fall into three groups. Handcrafted pipelines
+compute haze descriptors (dark channel, contrast, entropy, Gabor moments) and
+pass them to classical regressors or classifiers
+\cite{marzaguiReviewImageQuality2024,yadavRoadsideTreeImageBased2025,razimiIntegratingDeepLearning2024a};
+they are lightweight and easy to inspect, though sensitive to scene changes.
+Deep CNN approaches fine-tune ImageNet backbones directly on outdoor images
+\cite{kumaar.bImageBasedAir2025,vermaImagebasedAirPollution2025,kaushalEvaluationDeepLearning2024,zhangAirQualityLevel2024,mohanDeepLearningBasedPM252025,chakrabortyCanImageTell2024},
+frequently reporting classification accuracies above 90\%. Multimodal and
+multitask networks combine visual features with metadata or external sensor
+measurements
 \cite{abdelsalamSkyFuseNetCrossAttentionSwin2026,dohaDeepMultiTaskLearning2026,hanSmartCamAirDetectContrastiveApproach2025,leeEnhancingPM25Detection2025}.
-Two IEEE Transactions papers form the spine of our work. MDNet uses multiscale
-dilated convolutions to cut parameters by 87\% for mobile deployment
-\cite{wangLightweightAirQuality2024}. PFRML guides a regression head with
-class prototypes on the unit hypersphere and a multitask loss
+Two IEEE Transactions papers directly inform our architecture choices. MDNet
+uses multiscale dilated convolutions to cut parameter count by 87\% for mobile
+use \cite{wangLightweightAirQuality2024}, while PFRML pairs a regression head
+with class prototypes on the unit hypersphere under a multitask loss
 \cite{wangPrototypeFeatureRepresentationGuided2026}.
 
-Read critically, much of this literature measures memorisation rather than
-estimation. In our review of seventeen recent papers, fourteen split their data
-by image rather than by camera or place. Consecutive frames from one fixed
-camera then land in both training and test sets. Kamble et al. show the
-effect directly: shuffling the frames of a single time-lapse camera before
-splitting raised the correlation from $-0.22$ to $0.91$
-\cite{kambleMobileImageDrivenPM252025}. Nathvani et al. found that a model
-trained on fixed sites in Accra drops to near-chance accuracy at an unseen site
-\cite{nathvaniHereNowEvaluating2023}, and Byler et al. report that accuracy
-falls from 80\% at seen national parks to 30--66\% at held-out parks
-\cite{bylerLocationGeneralizabilityImageBased2025}. Other papers feed concurrent
-station readings into the model, which then ignores the image
-\cite{abdelsalamSkyFuseNetCrossAttentionSwin2026}, or use colour-jitter
-augmentation that destroys the very signal they want to learn
-\cite{bylerLocationGeneralizabilityImageBased2025}. We therefore treat
-grouped splits, a held-out unseen-region test and physics-preserving
-augmentation as requirements, not options.
+A recurring weakness across this literature is data leakage. Out of seventeen
+recent papers we reviewed, fourteen split their datasets by individual image
+instead of by camera or site, allowing consecutive frames from the same
+stationary camera to appear in both training and test sets. Kamble et al.
+demonstrated how severe this effect is: randomly shuffling frames from one
+time-lapse camera raised the correlation from $-0.22$ to $0.91$
+\cite{kambleMobileImageDrivenPM252025}. Nathvani et al. observed that a model
+trained on fixed sites in Accra dropped to near-chance accuracy on an unseen
+site \cite{nathvaniHereNowEvaluating2023}, and Byler et al. reported accuracy
+falling from 80\% at seen national parks to 30--66\% at held-out parks
+\cite{bylerLocationGeneralizabilityImageBased2025}. Several studies also feed
+concurrent station measurements into the network, allowing it to bypass the
+image \cite{abdelsalamSkyFuseNetCrossAttentionSwin2026}, or apply colour-jitter
+augmentation that alters the haze signal itself
+\cite{bylerLocationGeneralizabilityImageBased2025}. In our experiments, we
+therefore enforce grouped splits, evaluate on a held-out unseen-region subset,
+and avoid colour or contrast augmentations.
 
-\subsection{What the reported numbers can and cannot tell us}
-The headline results in this literature are high, and most of them are hard to
-interpret. Five of the reviewed papers use the same Kaggle India--Nepal set of
-12,240 photos from eight sites and report six-class accuracies between 85\% and
-96\% \cite{dohaDeepMultiTaskLearning2026,abdelsalamSkyFuseNetCrossAttentionSwin2026,kumaar.bImageBasedAir2025,vermaImagebasedAirPollution2025,razimiIntegratingDeepLearning2024a}.
-All split by image, so the same few cameras appear on both sides of the split.
-Verma et al. balance and augment the data before splitting it
+\subsection{Evaluation issues in published benchmarks}
+Reported metrics across recent papers are high yet difficult to compare. Five
+reviewed studies use the same Kaggle India-Nepal dataset of 12,240 photos from
+eight locations and report six-class accuracies between 85\% and 96\%
+\cite{dohaDeepMultiTaskLearning2026,abdelsalamSkyFuseNetCrossAttentionSwin2026,kumaar.bImageBasedAir2025,vermaImagebasedAirPollution2025,razimiIntegratingDeepLearning2024a}.
+Because all five split at the image level, the same cameras appear in both
+splits. Verma et al. apply class balancing and augmentation prior to splitting
 \cite{vermaImagebasedAirPollution2025}, Razimi et al. report validation accuracy
-without a separate test set \cite{razimiIntegratingDeepLearning2024a}, and Kumaar
-and Deepak report 85\% test accuracy alongside a validation curve that stays
-near 60--67\% \cite{kumaar.bImageBasedAir2025}.
+with no separate test set \cite{razimiIntegratingDeepLearning2024a}, and Kumaar
+and Deepak report 85\% test accuracy despite validation curves staying near
+60--67\% \cite{kumaar.bImageBasedAir2025}.
 
-Single-camera studies reach even higher numbers for the same reason: the
-background never changes. Zhang et al. report 90.65\% on 2,622 images from one
-station camera, with hyperparameters tuned on the test set
-\cite{zhangAirQualityLevel2024}; Chakraborty et al. reach $R^2=0.93$ from manually
-drawn regions of one fixed CCTV camera \cite{chakrabortyCanImageTell2024}; Mohan
-et al. report $R^2\approx0.96$ on 244--499 images per site, possibly with
-oversampling before cross-validation \cite{mohanDeepLearningBasedPM252025}; and
-Kaushal et al. report 97.87\% on a 90-image test set
-\cite{kaushalEvaluationDeepLearning2024}. None of these numbers says how the
-model would behave on a photo from a new street.
+Single-camera studies produce even higher scores because the scene background
+remains constant. Zhang et al. obtain 90.65\% on 2,622 images from one station
+camera while tuning hyperparameters on the test set
+\cite{zhangAirQualityLevel2024}. Chakraborty et al. reach $R^2=0.93$ using
+manually selected regions from a single CCTV camera
+\cite{chakrabortyCanImageTell2024}, Mohan et al. report $R^2\approx0.96$ on
+244--499 images per site with apparent oversampling before cross-validation
+\cite{mohanDeepLearningBasedPM252025}, and Kaushal et al. report 97.87\% on a
+90-image test split \cite{kaushalEvaluationDeepLearning2024}. Such setups do not
+indicate how a model behaves on a photograph from a new street.
 
-Multimodal results need the same scrutiny. SkyFuseNet reports $R^2=0.998$, but
-its tabular input contains the concurrent PM$_{10}$ reading, and its own ablation
-gives an RMSE of 6.05\,\textmu g/m$^3$ for the sensors alone against
-158.95\,\textmu g/m$^3$ for the image alone
-\cite{abdelsalamSkyFuseNetCrossAttentionSwin2026}, so the photo contributes
-almost nothing. Doha et al. find that physics descriptors add only two to four
-points of accuracy to a ResNet-50, and their regression error of
-31.5\,\textmu g/m$^3$ is wider than several of the class bins they classify with
-95\% accuracy \cite{dohaDeepMultiTaskLearning2026}.
+Multimodal benchmarks exhibit similar pitfalls. SkyFuseNet reports $R^2=0.998$,
+yet its tabular inputs include concurrent PM$_{10}$ readings, and its own
+ablation shows an RMSE of 6.05\,\textmu g/m$^3$ from sensors alone compared with
+158.95\,\textmu g/m$^3$ from the image alone
+\cite{abdelsalamSkyFuseNetCrossAttentionSwin2026}. Doha et al. report that
+physical descriptors add two to four percentage points over ResNet-50, while
+their regression error of 31.5\,\textmu g/m$^3$ exceeds the width of several
+AQI bins that they classify at 95\% accuracy
+\cite{dohaDeepMultiTaskLearning2026}.
 
-The few studies with honest splits paint a more sober picture. At held-out
-national parks, Byler et al. never classify an ``Unhealthy'' image correctly,
-and their labels are ozone-based rather than particle-based
-\cite{bylerLocationGeneralizabilityImageBased2025}. SmartCamAirDetect uses ten
-fixed traffic cameras in Hong Kong \cite{hanSmartCamAirDetectContrastiveApproach2025},
-and the 99.6\% of Lee and Manova comes from multispectral drone imagery that no
-phone can capture, with an unreported split \cite{leeEnhancingPM25Detection2025}.
+Studies using spatial holdouts report much lower scores. At held-out national
+parks, Byler et al. never classify an ``Unhealthy'' image correctly, and their
+ground truth is ozone-based \cite{bylerLocationGeneralizabilityImageBased2025}.
+SmartCamAirDetect relies on ten fixed traffic cameras in Hong Kong
+\cite{hanSmartCamAirDetectContrastiveApproach2025}, whereas the 99.6\% accuracy
+reported by Lee and Manova comes from multispectral drone imagery with an
+unreported split \cite{leeEnhancingPM25Detection2025}. Furthermore, papers mix
+Chinese and US EPA scales, three to six classes, \textmu g/m$^3$ versus AQI,
+and accuracy versus $R^2$, preventing direct numerical comparison. Higher errors
+on unseen stations are expected when spatial leakage is removed. Smartphone
+evidence is also scarce: only Kamble et al. evaluate smartphone images, captured
+from one fixed viewpoint \cite{kambleMobileImageDrivenPM252025}.
 
-Finally, the studies measure different things: Chinese and US EPA categories,
-three to six classes, \textmu g/m$^3$ or AQI, accuracy or $R^2$. Their numbers
-cannot be compared with each other or with ours. Our AQI errors on unseen
-stations are expected to be higher, as a consequence of a protocol that
-measures estimation rather than memorisation. Evidence specific to phones is
-thin: only Kamble et al. use smartphone photos, from a single fixed view
-\cite{kambleMobileImageDrivenPM252025}, and no paper reports accuracy at unseen
-locations together with on-device cost.
-
-\subsection{Phones and lightweight models}
-A few studies target phones explicitly. Kamble et al. build a smartphone
-pipeline with EfficientNet features and compare HDR with non-HDR capture,
-finding that HDR tone mapping weakens the linear relation between image and
-\pmtwofive{} \cite{kambleMobileImageDrivenPM252025}. MDNet argues that model
-size is the main barrier to phone deployment \cite{wangLightweightAirQuality2024}.
-Neither reports accuracy at unseen locations together with measured on-device
-cost, which is the combination a real app needs. MobileNetV3
-\cite{howard2019mobilenetv3} remains the standard efficient backbone and is
-supported by both Core ML and TensorFlow Lite.
+\subsection{Lightweight and mobile-oriented models}
+Only a small fraction of studies explicitly target smartphones. Kamble et al.
+pair EfficientNet features with smartphone photography and compare HDR against
+non-HDR capture, noting that HDR tone mapping weakens the linear correlation
+with \pmtwofive{} \cite{kambleMobileImageDrivenPM252025}. MDNet targets model
+size as a primary deployment obstacle \cite{wangLightweightAirQuality2024}.
+Neither paper combines unseen-location evaluation with measured on-device
+compute and memory costs. MobileNetV3 \cite{howard2019mobilenetv3} remains a
+widely deployed lightweight backbone supported directly in Core ML and
+TensorFlow Lite.
 
 \subsection{Vision-language and frontier models}
-Large multimodal models are starting to appear in this area. Vahdatpour et al.
-use BLIP-2 with a diffusion model to classify and visualise sky images
-\cite{vahdatpourForecastingVisualizingAir2025}, but rely on a trained CNN for the
-estimate itself. To our knowledge no study has measured how well current
-general-purpose frontier models estimate AQI zero-shot from street photos, or
-compared them with small specialised models on the same images. RQ3 addresses
-this gap.
+Multimodal foundation models have only recently been explored for air quality.
+Vahdatpour et al. pair BLIP-2 with a diffusion model to classify and visualise
+sky images \cite{vahdatpourForecastingVisualizingAir2025}, but still use a
+trained CNN for the actual estimate. We are not aware of prior work measuring
+zero-shot AQI estimation by current frontier models on street-level photographs
+or comparing them directly against specialised on-device networks on the same
+test images.
 
 % =====================================================================
-\section{The Phone as an Air-Quality Sensor}\label{sec:mobile}
+\section{Smartphone Camera and Hardware Constraints}\label{sec:mobile}
 % =====================================================================
 
-\subsection{Who has a camera phone}
-Mobile phones are close to universal: 84\% of people aged ten and over own one
-\cite{itu2026facts}, and 4.6 billion people use their own smartphone for mobile
+\subsection{Global smartphone ownership}
+Worldwide, 84\% of people aged ten and over own a mobile phone
+\cite{itu2026facts}, and 4.6 billion use their own smartphone for mobile
 internet \cite{gsma2026somic}. Smartphones account for 7.41 of the 8.83 billion
-mobile subscriptions \cite{ericsson2025mobility}. About a quarter of the
-smartphones in use are iPhones and the rest run Android
-\cite{counterpoint2026installed,statcounter2026os}. Practically every one has a
-rear camera, and typical new phones now ship 50-megapixel main sensors
-\cite{omdia2025cameras,counterpoint2024camera}, which bin groups of pixels into a
-12-megapixel image. An app that only needs a photo therefore reaches far more
-people than any network of sensors could.
+active mobile subscriptions \cite{ericsson2025mobility}, split roughly into one
+quarter iOS and three quarters Android
+\cite{counterpoint2026installed,statcounter2026os}. Virtually all of these
+devices carry a rear camera, and new handsets commonly ship 50-megapixel main
+sensors \cite{omdia2025cameras,counterpoint2024camera} that bin pixels into
+12-megapixel outputs. Software requiring only a standard camera photo can
+therefore reach far more users than dedicated air-quality hardware.
 
-\subsection{The camera is not a photometer}
-A phone does not store what its sensor measured. The image signal processor
-(ISP) demosaics the raw data, estimates white balance, merges several frames
-into a high-dynamic-range image, applies local tone mapping, sharpens and boosts
-saturation. Google's HDR+ pipeline even contains an explicit \emph{dehaze}
-stage that pushes dark pixels darker \cite{hasinoff2016hdrplus}, which acts
-directly on the dark channel and contrast cues of Eq.~\eqref{eq:scatter}.
-Different brands process colour differently, so photos of the same scene from
-different flagship phones look measurably different \cite{wang2023smartphonecolor},
-and HDR capture weakens the link between image statistics and \pmtwofive{}
-\cite{kambleMobileImageDrivenPM252025}. Three design rules follow. First, the
-training data must come from many devices; PM25Vision's crowdsourced photos
-from dashcams and phones provide that variety. Second, colour, brightness and
-contrast augmentation must be avoided, because the network has to learn the
-real relation between haze and appearance rather than invariance to it
-\cite{bylerLocationGeneralizabilityImageBased2025}. Third, relative cues, such as
-the contrast between near and distant objects, are more robust to device
-processing than absolute colour.
+\subsection{Camera processing effects}
+Smartphone JPEGs differ substantially from raw sensor readings. Before saving an
+image, the image signal processor (ISP) performs demosaicing, white-balance
+estimation, multi-frame HDR merging, local tone mapping, sharpening, and
+saturation boosts. Google's HDR+ pipeline includes an explicit \emph{dehaze}
+stage that darkens shadow pixels \cite{hasinoff2016hdrplus}, directly modifying
+the dark channel and contrast cues in Eq.~\eqref{eq:scatter}. Colour rendering
+also varies across manufacturers for the exact same scene
+\cite{wang2023smartphonecolor}, and HDR processing reduces correlation with
+\pmtwofive{} \cite{kambleMobileImageDrivenPM252025}. Because of this camera
+variability, training data needs wide device diversity, which PM25Vision
+provides through crowdsourced dashcam and phone imagery. Colour, brightness, and
+contrast augmentations should be omitted so the model retains sensitivity to
+real haze appearance \cite{bylerLocationGeneralizabilityImageBased2025}, and
+relative cues such as contrast loss between near and far objects remain more
+stable across devices than absolute colour.
 
-\subsection{Compute and memory of the phones in use}
-The phones people carry are older and slower than the phones that are sold.
-Owners keep a smartphone for about 43 months
-\cite{counterpoint2025replacement}, so the median phone in use is more than two
-years old \cite{russell2025inequality}, and a memory-price shock cut global
-shipments by 22\% year on year in the third quarter of 2026, which will age the
-fleet further \cite{idc2026q3}. New phones sold in 2025 had 8.4\,GB of RAM on
-average \cite{counterpoint2026dram}, but no public source gives the RAM of
-phones in use; the best proxy, the users of the AnTuTu benchmark, is biased
-towards new phones and still shows 7.6\% with 4\,GB or less
-\cite{antutu2026ram}. Speed varies even more than memory. The AI Benchmark
-score of a Snapdragon~680, a common budget chip, is 92, against 20,726 for the
-2025 flagship Snapdragon~8 Elite \cite{aibenchmark2026ranking}. A phone at the
-75th percentile of performance is a mid-2023 Galaxy~A24 with two Cortex-A76 and
-six Cortex-A55 cores and 4--8\,GB of RAM \cite{russell2025inequality}.
+\subsection{Hardware profile of active devices}
+Smartphones in everyday use lag behind newly shipped models. Average replacement
+cycles sit around 43 months \cite{counterpoint2025replacement}, leaving the
+median active phone over two years old \cite{russell2025inequality}, while a
+memory-price spike drove global shipments down 22\% year on year in Q3 2026
+\cite{idc2026q3}. Phones shipped in 2025 averaged 8.4\,GB of RAM
+\cite{counterpoint2026dram}, though public installed-base RAM statistics do not
+exist; even AnTuTu benchmark users, who skew towards newer hardware, still
+include 7.6\% on 4\,GB or less \cite{antutu2026ram}. Compute varies across a
+much wider range. On AI Benchmark, a common budget chip such as the
+Snapdragon~680 scores 92 compared with 20,726 for the 2025 flagship
+Snapdragon~8 Elite \cite{aibenchmark2026ranking}. At roughly the 75th
+percentile of active hardware sits a mid-2023 Galaxy~A24 carrying two
+Cortex-A76 cores, six Cortex-A55 cores, and 4--8\,GB of RAM
+\cite{russell2025inequality}.
 
-Dedicated AI accelerators cannot be assumed on Android. Google deprecated the
-Neural Networks API in Android~15, and LiteRT's NPU delegate requires Android~12
-(API~31) and a 64-bit build \cite{litert2026}, while the CPU path runs on
-practically every device (Fig.~\ref{fig:devices}a). Graphics support is broad
-instead: 88.8\% of Google Play devices support Vulkan~1.1 and 98.2\% OpenGL ES~3.2
-\cite{android2025dashboard}. On iOS, 79\% of iPhones run iOS~26, which requires
-an A13 chip or newer with a Neural Engine available through Core ML
-\cite{apple2026adoption}. Memory per app is limited too. Android guarantees an
-app only 128--256\,MB of Java heap on common screen sizes \cite{android16cdd}, and
-Android~17's memory limiter caps a visible app at 2\,GB on a 4\,GB phone
-\cite{android2026memorylimiter}.
+Dedicated NPUs cannot be relied upon across Android devices. Google deprecated
+the Neural Networks API in Android~15, and LiteRT's NPU delegate requires
+Android~12 (API~31) on a 64-bit build \cite{litert2026}, whereas CPU execution
+runs almost everywhere (Fig.~\ref{fig:devices}a). GPU APIs are widely present,
+with 88.8\% of Google Play devices supporting Vulkan~1.1 and 98.2\% supporting
+OpenGL ES~3.2 \cite{android2025dashboard}. On iOS, 79\% of active iPhones run
+iOS~26, guaranteeing at least an A13 processor and Neural Engine access via
+Core ML \cite{apple2026adoption}. Per-app memory is also bounded, with Android
+guaranteeing 128--256\,MB of Java heap on typical screen densities
+\cite{android16cdd} and Android~17's memory limiter capping foreground apps at
+2\,GB on 4\,GB phones \cite{android2026memorylimiter}.
 
-\subsection{Our design target}
-From these figures we derive a target device. It is an estimate, not a
-published statistic: to serve roughly 80\% of camera-phone users, a model must
-run on the CPU of an octa-core 64-bit ARM phone dominated by small Cortex-A55
-cores, with at least 3\,GB of RAM and Android~11 (88.3\% of Google Play devices)
-or a recent iOS, without relying on an NPU. In practice that means a model of a
-few megabytes, well under 100\,MB of working memory, and a single forward pass
-that takes tens of milliseconds on one big core. Section~\ref{sec:deploy}
-checks every model against this target.
+\subsection{Target device specification}
+Based on these market figures, we define an estimated hardware target covering
+roughly 80\% of camera-phone users: a 64-bit octa-core ARM phone built mainly
+around Cortex-A55 efficiency cores, with at least 3\,GB of RAM and either
+Android~11 (88.3\% of Google Play devices) or a recent iOS release, running
+purely on CPU without assuming NPU access. Meeting this specification requires
+model weights of a few megabytes, working memory well below 100\,MB, and
+single-photo inference taking tens of milliseconds on a single performance core.
 
 % =====================================================================
 \section{Data, Image Processing and Evaluation}\label{sec:data}
 % =====================================================================
 
-\subsection{PM25Vision and cleaning}
-PM25Vision \cite{pm25vision2025} pairs crowdsourced street-level daytime
-photos with the \pmtwofive{} AQI reported by a nearby monitoring station. The
-photos come from many different devices, including dashcams and phones, taken
-between 2014 and 2025 at 1024$\times$768 or 1024$\times$576 pixels. About half
-are from Asia, a quarter from Europe and 12\% from North America. Labels are
-US EPA AQI values from 1 to 530, which map to six categories: Good (0--50),
-Moderate (51--100), Unhealthy for Sensitive Groups (USG, 101--150), Unhealthy
-(151--200), Very Unhealthy (201--300) and Hazardous ($>$300). The EPA AQI is a
-piecewise-linear transform of the 24-hour \pmtwofive{} concentration
-\cite{epa2024aqi}; we model the AQI directly because that is what users see.
+\subsection{PM25Vision dataset and cleaning}
+PM25Vision \cite{pm25vision2025} links crowdsourced daytime street-level
+photographs to \pmtwofive{} AQI values from nearby monitoring stations. The
+photos were collected between 2014 and 2025 across varied dashcams and
+smartphones at 1024$\times$768 or 1024$\times$576 resolution, with roughly half
+from Asia, a quarter from Europe, and 12\% from North America. Labels are US EPA
+AQI scores between 1 and 530 spanning six bins: Good (0--50), Moderate
+(51--100), Unhealthy for Sensitive Groups (USG, 101--150), Unhealthy
+(151--200), Very Unhealthy (201--300), and Hazardous ($>$300). The US EPA AQI
+is a piecewise-linear mapping of 24-hour \pmtwofive{} concentration
+\cite{epa2024aqi}, and we predict AQI directly because that is the scale shown
+to end users.
 
-We cleaned the data deterministically (notebook~1 and
-\texttt{src/data/cleaning.py}). The raw training file has 8,298 rows for 8,194
-unique images. We removed the 18 images that also appear in the test set and
-merged images linked to several stations by taking the median AQI. This leaves
-8,176 training images from 2,527 stations and 2,920 test images from 729
-stations, with no station shared between the two sets. The categories are
-balanced up to Unhealthy (about 1,770 training images each), but only 731
-images are Very Unhealthy and 355 Hazardous. That long tail returns in the
-results. Fig.~\ref{fig:dataset} shows where the photos were taken: the test
-stations lie in the same cities as the training stations except for the 717
-photos, marked orange, that are more than 25~km from any training photo. Those
-unseen-region photos contain more clean air and almost no Hazardous cases.
+Deterministic cleaning was implemented in notebook~1 and
+\texttt{src/data/cleaning.py}. Starting from 8,298 raw training rows covering
+8,194 unique images, we dropped 18 images that overlapped with the test set and
+collapsed multi-station duplicates using the median AQI. The cleaned splits
+contain 8,176 training images across 2,527 stations and 2,920 test images across
+729 stations, with zero station overlap. The four lowest categories each contain
+about 1,770 training images, whereas Very Unhealthy has 731 and Hazardous has
+only 355. Fig.~\ref{fig:dataset} plots the geographic distribution, where most
+test stations fall in the same cities as training stations except for 717 orange
+points located more than 25~km from any training image. That distant subset
+skews cleaner and contains almost no Hazardous samples.
 
 \begin{figure*}[!t]
   \centering
@@ -391,33 +357,31 @@ unseen-region photos contain more clean air and almost no Hazardous cases.
 \end{figure*}
 
 \subsection{Evaluation protocol}
-Fixed cameras and dense city clusters make random splits misleading, so all
-model selection used five-fold \texttt{StratifiedGroupKFold}, grouped either by
-station or by spatial clusters of stations within 25~km (single-linkage on
-Haversine distances), and stratified by AQI category. The number of training
-epochs for each deep model was fixed from these cross-validation runs. Every
-final model was then trained once on all 8,176 training images and its
-\emph{last} epoch was evaluated exactly once on the test set. No test result was
-used to choose anything.
+Because fixed cameras and dense urban clusters cause random splits to leak
+location information, all model selection used five-fold
+\texttt{StratifiedGroupKFold} stratified by AQI category and grouped by station
+or by 25~km spatial clusters (single-linkage on Haversine distance). Training
+epoch budgets for all neural models were fixed from cross-validation. Each final
+model was then trained once on all 8,176 training images and its \emph{last}
+epoch was evaluated a single time on the test set, with no test feedback used
+for tuning or selection.
 
-We report two test sets: the full test set (2,920 photos, 729 stations) and
-\texttt{test\_gt25km}, the 717 test photos (205 stations) that lie more than
-25~km from every training photo. Three-quarters of the test photos lie within
-25~km of a training photo, so the second set is the honest measure of
-performance in a new region. Regression quality is measured by the mean
-absolute error (MAE) in AQI points, root mean squared error, $R^2$ and Spearman
-rank correlation; category quality by six-class accuracy, accuracy within one
-category ($\pm$1 Acc), macro-F1, and the MAE on the two tail categories
-(AQI$>$200). Because photos from one station are correlated, confidence
-intervals come from a station-level cluster bootstrap: we resample stations with
-replacement 1,000 times and recompute the MAE. Model comparisons use a
-\emph{paired} station bootstrap of the MAE difference on identical resamples.
+We report metrics on both the full test set (2,920 photos, 729 stations) and
+\texttt{test\_gt25km} (717 photos, 205 stations more than 25~km from any
+training photo). Since three-quarters of test images lie within 25~km of
+training data, \texttt{test\_gt25km} measures genuine out-of-region
+generalisation. Regression accuracy is scored with mean absolute error (MAE) in
+AQI points, RMSE, $R^2$, and Spearman rank correlation; categorical performance
+is scored with six-class accuracy, accuracy within one category ($\pm$1 Acc),
+macro-F1, and tail MAE for AQI$>$200. Because images from the same station are
+correlated, 95\% confidence intervals come from a station-level cluster
+bootstrap with 1,000 resamples with replacement, and model differences use a
+\emph{paired} station bootstrap on identical resamples.
 
-\subsection{Image processing: what the filters see}
-Before training any network we asked which simple image operations respond to
-pollution (notebook~2). Following Eq.~\eqref{eq:scatter} we computed six
-per-pixel filter maps on each photo resized to 256$\times$192, with RGB values
-$I^c\in[0,1]$:
+\subsection{Handcrafted haze filters}
+Before training neural networks, we tested simple image-processing filters
+motivated by Eq.~\eqref{eq:scatter} (notebook~2). On images resized to
+256$\times$192 with RGB channels $I^c\in[0,1]$, we computed six pixel-wise maps:
 \begin{align}
   \text{dark channel: } D(x) &= \min_{y\in\Omega_7(x)} \min_{c} I^c(y), \label{eq:dcp}\\
   \text{saturation: } S(x) &= \frac{\max_c I^c(x) - \min_c I^c(x)}{\max_c I^c(x) + \epsilon},\\
@@ -426,37 +390,35 @@ $I^c\in[0,1]$:
   \text{local contrast: } C(x) &= \operatorname{std}_{y\in\Omega_7(x)} Y(y),\\
   \text{blue ratio: } B(x) &= I^b(x) \,/\, \textstyle\sum_c I^c(x),
 \end{align}
-where $Y$ is the grey image, $G_x, G_y$ are Sobel kernels and $\Omega_7(x)$ is
-a $7\times7$ window. Haze raises the dark channel and brightness and lowers
-saturation, edges and local contrast. Because haze grows with distance, which
-is largest near the horizon, we summarised every map over three horizontal
-bands (top, middle, bottom) with the mean and the 10th and 90th percentiles,
-giving 54 band features per photo. A second, physics-oriented set of 18
-statistics (saturation, gradient and dark channel; mean and standard deviation
-over the full image, top and bottom band) is computed in PyTorch by
-\texttt{src/features/haze\_features.py}.
+where $Y$ is luminance, $G_x$ and $G_y$ are Sobel kernels, and $\Omega_7(x)$ is
+a $7\times7$ patch. Haze increases the dark channel and brightness while
+reducing saturation, edge magnitude, and local contrast. Since optical path
+length grows towards the horizon, each map was summarised across three
+horizontal bands (top, middle, bottom) by its mean and 10th and 90th
+percentiles, yielding 54 features per photo. A separate PyTorch module
+(\texttt{src/features/haze\_features.py}) extracts 18 physics-oriented summary
+statistics (mean and standard deviation of saturation, gradient, and dark
+channel across the full image, top band, and bottom band).
 
-Fig.~\ref{fig:filters} shows why these filters are useful but not sufficient.
-The top photo is grey and overcast and its haze maps look ``polluted'', yet the
-AQI is 9; the bottom photo looks fairly clear and has an AQI of 302. On the
-training set the single strongest feature, the 90th percentile of saturation in
-the top band, has a Spearman correlation of only $-0.26$ with AQI. The
-strongest signals come from the top band, which supports the distance argument
-above (Fig.~\ref{fig:filtercorr}): saturation, edges, local contrast and the blue
-ratio fall with AQI in the top band, the dark channel rises, and the bottom band,
-dominated by nearby road, carries almost no signal. These findings shaped every
-later model: the filters were built into
-the first layer of our from-scratch CNNs, the 4-scalar physics prior was tested
-inside PFRML, and we never apply brightness, contrast, saturation or hue
-augmentation, because that would erase the signal.
+Fig.~\ref{fig:filters} illustrates the ambiguity of raw haze cues. The overcast
+scene at the top looks hazy across all six filter maps despite an AQI of 9,
+whereas the bottom scene appears relatively clear at AQI 302. On the training
+set, the single strongest correlation with AQI is only $\rho=-0.26$ (90th
+percentile of top-band saturation). As shown in Fig.~\ref{fig:filtercorr}, the
+top band carries the clearest relationship (saturation, edges, local contrast,
+and blue ratio decrease with AQI while the dark channel rises), whereas the
+bottom band is mostly nearby pavement and shows little signal. Based on this
+analysis, we embedded the filter maps directly into the input layer of our
+from-scratch CNNs, tested a 4-scalar physics prior inside PFRML, and excluded
+brightness, contrast, saturation, and hue augmentations across all models.
 
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\textwidth]{figures/final_haze_filters.png}
   \caption{The six haze filters on two training photos. Top: an overcast scene
   with AQI~9 looks hazy to every filter. Bottom: a scene with AQI~302 looks
-  relatively clear. Grey sky is not the same as polluted air, which is why
-  filters alone reach only $R^2=0.18$ (Table~\ref{tab:main}).}
+  relatively clear. Overcast sky mimics pollution in these maps, leaving linear
+  filter baselines at $R^2=0.18$ (Table~\ref{tab:main}).}
   \label{fig:filters}
 \end{figure*}
 
@@ -470,100 +432,99 @@ augmentation, because that would erase the signal.
 \end{figure}
 
 \subsection{Metadata encoding}
-The only non-image inputs a phone can always provide are its position and the
-date. We encode latitude $\varphi$, longitude $\lambda$ and month $m$ as
+The only non-image fields reliably available offline on a phone are coordinates
+and date. We encode latitude $\varphi$, longitude $\lambda$, and month $m$ as
 \begin{equation}
   z = \bigl[\cos\varphi\cos\lambda,\ \cos\varphi\sin\lambda,\ \sin\varphi,\
   \sin\tfrac{2\pi m}{12},\ \cos\tfrac{2\pi m}{12}\bigr],
   \label{eq:meta}
 \end{equation}
-a point on the unit sphere plus a cyclic month, so that neighbouring places and
-December/January are close. We deliberately exclude concurrent sensor readings,
-which a phone does not have and which let models skip the image
+placing coordinates on the unit sphere and wrapping December smoothly into
+January. Concurrent air-station measurements are excluded because a standalone
+phone has no access to them and models given sensor inputs ignore the photograph
 \cite{abdelsalamSkyFuseNetCrossAttentionSwin2026}.
 
 % =====================================================================
 \section{Models}\label{sec:models}
 % =====================================================================
 
-We trained nine models of increasing capacity, summarised in
-Table~\ref{tab:main}. All deep models predict AQI$/100$ and use whole-image
-resizing, so that both sky and ground stay in view, together with gentle
-geometric augmentation (horizontal flip, $\pm5^\circ$ rotation, 2\% translation,
-2\% scale for the 224-pixel models; flip and shifts of up to 8 pixels for the
-small CNNs).
+We trained nine models spanning classical baselines to multimodal neural
+networks (Table~\ref{tab:main}). Every deep model predicts AQI$/100$ from a
+whole-image resize, keeping both sky and ground intact. Geometric augmentations
+were kept mild: horizontal flips, $\pm5^\circ$ rotations, 2\% translations, and
+2\% scaling for the 224-pixel models, and flips plus shifts up to 8 pixels for
+the smaller CNNs.
 
 \subsection{Baselines}
-\textbf{Median} predicts the training median (AQI~111) for every photo. It is
-the floor any useful model must beat. \textbf{Ridge (18 haze stats)} and
-\textbf{Ridge (54 band filters)} fit standardised linear regressions on the two
-filter sets from Section~\ref{sec:data}, with the penalty chosen by internal
-cross-validation for the first. \textbf{Metadata MLP} sees no pixels at all: a
-5--64--32--1 network with ReLU on $z$ from Eq.~\eqref{eq:meta}, trained for 40
-epochs with mean squared error. It measures how much of the task can be solved
-by knowing \emph{where} and \emph{when} a photo was taken.
+The constant Median baseline outputs the training median (AQI~111) for all
+inputs. Ridge (18 haze stats) and Ridge (54 band filters) fit standardised
+linear regressions on the filter features from Section~\ref{sec:data}, selecting
+the regularisation penalty for the 18-feature model via internal
+cross-validation. To isolate how much AQI variance is explained purely by
+location and season, Metadata MLP takes only the 5-dimensional vector $z$ from
+Eq.~\eqref{eq:meta} through a 5-64-32-1 ReLU network trained for 40 epochs
+with MSE loss, seeing no pixels at all.
 
 \subsection{From-scratch CNNs with built-in haze filters}
-Notebook~3 builds two CNNs that receive the photo at 144$\times$192 pixels.
-Their first layer is a fixed, differentiable \texttt{HazeFilters} module that
-appends five filter maps (dark channel, saturation, brightness, Sobel edges,
-local contrast) to the RGB channels, giving eight input channels.
-\textbf{HazeCNN} (0.60\,M parameters) stacks four convolutional blocks with
-batch normalisation and max-pooling, global average pooling and a small
-head. \textbf{ResSE} (1.19\,M parameters) adds residual blocks and two
-squeeze-and-excitation blocks, which learn one weight per channel so that
-haze-related channels can be amplified. Both are trained with the L1 loss and
-Adam, for 10 and 20 epochs respectively, with a cosine learning-rate decay.
+Notebook~3 implements two small CNNs operating on 144$\times$192 images. Both
+begin with a fixed, differentiable \texttt{HazeFilters} layer that concatenates
+five filter maps (dark channel, saturation, brightness, Sobel edges, and local
+contrast) onto RGB to form an eight-channel input. HazeCNN (0.60\,M parameters)
+uses four convolutional blocks with batch normalisation and max-pooling followed
+by global average pooling and a linear regression head. ResSE (1.19\,M
+parameters) replaces those blocks with residual layers and two
+squeeze-and-excitation blocks that reweight channels dynamically. Both models
+were trained using L1 loss, Adam, and cosine learning-rate decay for 10 and 20
+epochs respectively.
 
 \subsection{Pretrained MobileNetV3-Small}
-\textbf{MobileNetV3-S} replaces the classifier of an ImageNet-pretrained
-MobileNetV3-Small \cite{howard2019mobilenetv3} with a single regression output
-(1.52\,M parameters). It is trained for 30 epochs with mean squared error,
-AdamW (learning rate $10^{-3}$, weight decay $10^{-4}$), three warm-up epochs
-and cosine decay, gradient clipping at 1.0 and batch size 32. This is the
-simplest phone-ready image model and our main image-only reference.
+MobileNetV3-S replaces the classification head of an ImageNet-pretrained
+MobileNetV3-Small \cite{howard2019mobilenetv3} with a single scalar regression
+output (1.52\,M parameters). It trains for 30 epochs under MSE loss with AdamW
+(learning rate $10^{-3}$, weight decay $10^{-4}$), three warm-up epochs, cosine
+decay, gradient clipping at 1.0, and batch size 32. It is our main image-only
+reference.
 
 \subsection{PFRML}
-\textbf{PFRML full} follows the PFRML design
-\cite{wangPrototypeFeatureRepresentationGuided2026} on the MobileNetV3-S spine.
-Feature maps from four backbone stages are projected by $1\times1$
-convolutions to $D{=}224$ channels, aligned to a $14\times14$ grid and summed
-(the Dimension Consistency Module, DCM). A light two-layer, four-head
-Transformer encodes the 196 tokens into an image embedding $\chi\in\mathbb{R}^{224}$.
-Six class prototypes $p_k$ on the unit hypersphere, updated by an exponential
-moving average, give class probabilities
+PFRML full adapts the architecture of
+\cite{wangPrototypeFeatureRepresentationGuided2026} onto the same MobileNetV3-S
+backbone. Feature maps from four backbone stages are projected via $1\times1$
+convolutions to $D{=}224$ channels, resampled onto a $14\times14$ grid, and
+summed inside the Dimension Consistency Module (DCM). A two-layer, four-head
+Transformer then aggregates the 196 spatial tokens into an image representation
+$\chi\in\mathbb{R}^{224}$. Six unit-hypersphere class prototypes $p_k$, updated
+by exponential moving average, yield class probabilities
 $P(k\mid\chi) = \operatorname{softmax}_k\bigl(\cos(\chi,p_k)/\tau\bigr)$, and
-the regression head receives $\chi$ together with the probability-weighted
-prototype $\sum_k P(k\mid\chi)\,p_k$. The loss is
+the regression head takes $\chi$ concatenated with the weighted prototype
+$\sum_k P(k\mid\chi)\,p_k$. Training runs for 30 epochs under
 $\mathcal{L} = \mathcal{L}_{\mathrm{CE}}^{\epsilon} + \beta\,\mathcal{L}_{\mathrm{MSE}}$
-with label smoothing $\epsilon{=}0.1$, $\beta{=}0.5$ and class weights
-$w_k \propto N_k^{-0.5}$. The full variant also enables attention pooling over
-the tokens and a sigmoid-gated physics prior built from four optical scalars
-(luminance entropy, RMS contrast, dark-channel transmission $t$ and extinction
-$-\ln t$). It is trained for 30 epochs.
+with label smoothing $\epsilon{=}0.1$, $\beta{=}0.5$, and class weights
+$w_k \propto N_k^{-0.5}$. The full configuration enables attention pooling over
+the Transformer tokens and a sigmoid-gated physics prior built from four optical
+scalars: luminance entropy, RMS contrast, dark-channel transmission $t$, and
+extinction $-\ln t$.
 
-\subsection{Fusion R1 (our deployed model)}
-\textbf{Fusion R1} keeps the DCM and Transformer of PFRML but removes the
-prototype branch, which our cross-validation showed hurt regression, and adds
-the metadata branch (Fig.~\ref{fig:pipeline}A). With backbone $B$, neck $N$,
-Transformer $T$ and metadata encoder $g$:
+\subsection{Fusion R1}
+Fusion R1 retains the DCM and Transformer from PFRML, drops the prototype branch
+after cross-validation showed it hurt regression error, and adds the metadata
+branch (Fig.~\ref{fig:pipeline}A). Writing $B$ for the backbone, $N$ for the
+DCM neck, $T$ for the Transformer, and $g$ for the metadata encoder:
 \begin{align}
   \chi &= T\bigl(N(B(x))\bigr) \in \mathbb{R}^{224}, \qquad m = g(z) \in \mathbb{R}^{32},\\
   \hat{y} &= 100\cdot h\bigl([\chi;\, m]\bigr),
 \end{align}
-where $h$ is a 256--256--1 MLP. An auxiliary head $h_{\mathrm{aux}}$ predicts
-AQI from $\chi$ alone, with its gradient kept out of the metadata branch, so
-that the image path must stay useful on its own:
+where $h$ is a 256-256-1 MLP. An auxiliary head $h_{\mathrm{aux}}$ predicts
+AQI directly from $\chi$ without touching the metadata branch, encouraging the
+visual encoder to remain informative on its own:
 \begin{equation}
   \mathcal{L} = \bigl\|h([\chi;m]) - \tfrac{y}{100}\bigr\|^2 + 0.5\,\bigl\|h_{\mathrm{aux}}(\chi) - \tfrac{y}{100}\bigr\|^2 .
 \end{equation}
-Fusion R1 has 2.02\,M parameters. It is trained with the same optimiser as
-MobileNetV3-S for 7 epochs, a number fixed beforehand by a rule on the
-spatial-cluster cross-validation curves. At test time we also evaluate it with
-$m$ set to zero (\emph{metadata off}) to measure how much it depends on location,
-and read out the auxiliary head, which is a free image-only prediction from the
-same network. Fig.~\ref{fig:curves} shows the training curves of the five
-neural models.
+Fusion R1 totals 2.02\,M parameters and uses the same optimiser schedule as
+MobileNetV3-S for 7 epochs, chosen beforehand from spatial-cluster
+cross-validation curves. At evaluation time we also test setting $m$ to zero
+(\emph{metadata off}) to inspect reliance on coordinates, and we evaluate the
+auxiliary head directly as an image-only prediction from the same checkpoint.
+Fig.~\ref{fig:curves} plots training loss curves for all five neural models.
 
 \begin{figure*}[!t]
   \centering
@@ -578,10 +539,9 @@ neural models.
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=0.92\textwidth]{figures/final_pipeline.png}
-  \caption{(A) The offline pipeline: the photo and its GPS/month metadata are
-  processed entirely on the phone by Fusion R1. (B) The cloud alternative we
-  compare against: the same inputs are uploaded to a frontier model through its
-  command-line agent.}
+  \caption{(A) Offline pipeline: the photograph and GPS/month metadata are
+  processed on the phone by Fusion R1. (B) Cloud comparison: the same inputs are
+  sent to a frontier model through its command-line agent.}
   \label{fig:pipeline}
 \end{figure*}
 
@@ -589,76 +549,72 @@ neural models.
 \section{Frontier Models as Zero-Shot Estimators}\label{sec:frontier}
 % =====================================================================
 
-Because this work targets offline inference, frontier models cannot form part
-of the proposed system: they are served from remote data centres, require
-network connectivity, receive the user's image and location, and incur a
-per-query cost. They nevertheless provide the natural reference point. If a
-general-purpose model already estimates AQI accurately from a photograph, a
-specialised offline model is justified only if it approaches that accuracy.
+Frontier multimodal models cannot run offline on a phone: they execute in remote
+data centres, require network access, receive the user's photo and location, and
+charge per request. They are still a useful reference point because they show
+how close a compact specialised network gets to large general-purpose systems on
+the exact same test photos.
 
 \subsection{Agents}
-Two commercial multimodal models were evaluated as zero-shot AQI estimators.
-Each was accessed through its vendor's command-line agent in non-interactive
-(print) mode, authenticated with a standard user subscription rather than an
-API key:
+We evaluated two commercial multimodal models zero-shot through their
+command-line agents in non-interactive print mode, using standard user
+subscriptions instead of API keys:
 \begin{itemize}
-  \item \textbf{Claude}: the Claude Code CLI (\texttt{claude -p}) with model
+  \item Claude Code CLI (\texttt{claude -p}) running
         \texttt{claude-opus-5-5} \cite{anthropic2026claude};
-  \item \textbf{Gemini}: Google's Antigravity CLI (\texttt{agy -p}) with model
+  \item Google's Antigravity CLI (\texttt{agy -p}) running
         \texttt{gemini-4-argon-medium} \cite{google2026gemini}.
 \end{itemize}
-For each query, the agent reads a single image file and returns a JSON object
-validated against a fixed schema: an integer AQI in $[0,500]$, an EPA category,
-a confidence in $[0,1]$ and a justification of at most 25 words. Notebook~5
-(\texttt{5.frontier-and-mobile-deployment.ipynb}) issues the queries in
-parallel via \texttt{subprocess}, retries failed calls and appends every raw
-response to \texttt{results/frontier/predictions.jsonl}, which makes the
-experiment resumable and fully auditable. Responses were collected on 21
-November 2026 with Claude Code~2.1.330 at its default reasoning effort and
-Antigravity~1.5.10; the identifier \texttt{gemini-4-argon-medium} selects
-Gemini~4 Argon at the medium thinking level.
+For each photo, the agent opens the image file and returns a schema-validated
+JSON object containing an integer AQI in $[0,500]$, an EPA category, a
+confidence score in $[0,1]$, and a justification of at most 25 words.
+Notebook~5 (\texttt{5.frontier-and-mobile-deployment.ipynb}) dispatches calls in
+parallel with \texttt{subprocess}, retries failures, and logs every raw answer
+to \texttt{results/frontier/predictions.jsonl} for auditability and resumability.
+All responses were collected on 21 November 2026 using Claude Code~2.1.330 at
+default reasoning effort and Antigravity~1.5.10, where
+\texttt{gemini-4-argon-medium} selects Gemini~4 Argon at medium thinking level.
 
 \subsection{Conditions and leakage control}
-Each image is evaluated under two input conditions. In the \emph{photo only}
-condition the prompt restricts the model to visible evidence (haze, contrast of
-distant objects, sky colour), matching the information available to our
-image-only models. In the \emph{photo + GPS + month} condition the prompt
-additionally supplies the latitude and longitude (three decimals) and the month
-of capture, and permits the use of prior knowledge about typical local air
-quality; this corresponds exactly to the inputs of Fusion R1. The full prompts
-are given in the Appendix.
+Every sampled photo was evaluated twice. Under the \emph{photo only} condition,
+the prompt restricts reasoning to visible cues (haze, contrast of distant
+objects, sky colour), matching our image-only networks. Under the
+\emph{photo + GPS + month} condition, the prompt also supplies latitude and
+longitude rounded to three decimal places along with the capture month,
+permitting prior knowledge of regional air quality and matching Fusion R1's
+inputs. Full prompt wording is listed in the Appendix.
 
-Several controls prevent access to the ground truth. Each call executes in an
-isolated directory that contains only the target image, renamed to its opaque
-numeric identifier, so no metadata file is accessible. Claude is restricted to
-the file-reading tool and therefore has no web access, and both agents are
-instructed not to use any other tool or source. Only the month of capture is
-disclosed, never the date, so the station reading for that day cannot be
-retrieved. Session persistence is disabled, so no information carries over
-between queries.
+To prevent label leakage, each call runs inside an isolated working directory
+containing only the target image renamed to an opaque numeric ID, leaving no
+metadata files reachable. Claude is limited strictly to the file-reading tool
+without web access, and both agents are instructed not to use any external tool
+or source. Supplying only the month (never the calendar day) prevents looking up
+historical station readings, and session persistence is turned off so answers
+cannot influence subsequent queries.
 
 \subsection{Sample}
-Given median response times of 6.7\,s (Claude) and 16.2\,s (Gemini) per query,
-the evaluation uses a random sample of 200 test photos (seed 42) instead of the
-full set of 2,920. All of our models are scored on the same 200 photos, so
-every comparison is paired. The
-sample comes from 150 stations and follows the test set: 49 Good, 57 Moderate,
-43 USG, 29 Unhealthy, 19 Very Unhealthy and 3 Hazardous photos, 39 of them more
-than 25~km from any training photo. All 800 queries (200 photos, two agents, two
-conditions) returned a valid answer on the first attempt.
+Because median response times were 6.7\,s for Claude and 16.2\,s for Gemini, we
+sampled 200 test photos (random seed 42) out of the 2,920 test images and
+evaluated all offline models on the same 200 images for paired comparisons. The
+sample spans 150 stations and mirrors the test-set class balance: 49 Good, 57
+Moderate, 43 USG, 29 Unhealthy, 19 Very Unhealthy, and 3 Hazardous photos,
+including 39 images taken more than 25~km from any training photo. All 800
+queries (200 photos $\times$ two agents $\times$ two conditions) returned valid
+JSON on the first try.
 
 % =====================================================================
 \section{Results}\label{sec:results}
 % =====================================================================
 
-All numbers in this section come from two notebooks:
-\texttt{4.models-eval-and-result.ipynb} trains and scores every model under the
-protocol of Section~\ref{sec:data}, and \texttt{5.frontier-and-mobile-deployment.ipynb}
-runs the frontier agents and the footprint, distance and occlusion analyses on
-notebook~4's saved models. Six of the models had been trained before with the same
-recipes; our rerun reproduces five of them within 1~AQI point of their
-recorded test MAE. The exception is the Metadata MLP, discussed below (the
-metadata-off ablation of Fusion R1 also moved, by 3.0).
+All results in this section were produced by two notebooks:
+\texttt{4.models-eval-and-result.ipynb} trains and evaluates every model under
+the Section~\ref{sec:data} protocol, while
+\texttt{5.frontier-and-mobile-deployment.ipynb} runs the frontier agents
+alongside the footprint, distance, and occlusion checks on those saved
+checkpoints. Six architectures had earlier recorded runs under the same
+recipes; our rerun reproduced five of them within 1~AQI point of their previous
+test MAE, with the Metadata MLP diverging (the metadata-off ablation of Fusion
+R1 also shifted by 3.0 points).
 
 \begin{table*}[!t]
   \centering
@@ -689,28 +645,28 @@ metadata-off ablation of Fusion R1 also moved, by 3.0).
 \end{table*}
 
 \subsection{Overall accuracy (RQ1)}
-Table~\ref{tab:main} and Fig.~\ref{fig:mae} give the full picture. Fusion R1 is
-the most accurate model on the full test set, with an MAE of 35.6 and
-$R^2=0.60$, against 63.6 for the constant median. It places 46\% of photos in
-the exact EPA category and 90\% within one category.
+On the full test set (Table~\ref{tab:main}, Fig.~\ref{fig:mae}), Fusion R1
+reaches the lowest MAE at 35.6 ($R^2=0.60$), compared with 63.6 for the
+constant median. It assigns 46\% of test photos to the exact EPA category and
+90\% within one category.
 
-The ranking also shows what each ingredient adds. Handcrafted haze filters on
-their own explain little ($R^2$ 0.04--0.18), which confirms the ambiguity of
-Fig.~\ref{fig:filters}. Learning convolutional features on top of the same
-filters helps: HazeCNN reaches 51.4 and the deeper ResSE 45.1. ImageNet
-pretraining helps more. MobileNetV3-S reaches 41.8 while needing 17--54 times
-less compute than the two from-scratch CNNs (Table~\ref{tab:footprint}). The
-PFRML prototype branch does \emph{not} help: PFRML full (44.1) is worse than
-the plain MobileNetV3-S it is built on, and its predictions snap to a few
-prototype levels, visible as horizontal bands in a predicted-versus-true plot.
-Adding location and month to the image path is the largest single gain: Fusion
-R1 is 6.1 points better than MobileNetV3-S.
+Comparing across model families separates the effect of each design choice.
+Linear models on handcrafted haze filters explain very little variance
+($R^2$ between 0.04 and 0.18), matching the overcast-vs-haze ambiguity in
+Fig.~\ref{fig:filters}. Training CNN layers directly on those filter maps lowers
+MAE to 51.4 for HazeCNN and 45.1 for ResSE, while ImageNet pretraining pushes
+MobileNetV3-S down to 41.8 at 17 to 54 times fewer FLOPs
+(Table~\ref{tab:footprint}). Adding PFRML's prototype branch hurts regression:
+PFRML full lands at 44.1, worse than the plain MobileNetV3-S backbone underneath
+it, and its outputs cluster into horizontal bands around discrete prototype
+levels in Fig.~\ref{fig:predtrue}. Incorporating location and month metadata produces the largest single improvement among the
+image networks, reducing MAE by 6.1 points from MobileNetV3-S to Fusion R1.
 
-Fig.~\ref{fig:scorecard} ranks every model on every metric at once, including
-its cost per photo, and Fig.~\ref{fig:predtrue} shows the predictions
-themselves. The two Ridge models and the median produce a flat cloud around the
-mean, the from-scratch CNNs begin to follow the diagonal, and the pretrained
-models follow it until about AQI~200, beyond which every model flattens out.
+Fig.~\ref{fig:scorecard} summarises every model across accuracy and footprint
+metrics, and Fig.~\ref{fig:predtrue} displays predicted against true AQI. The
+median and Ridge baselines stay compressed near the global mean, the
+from-scratch CNNs begin tracking the diagonal, and the pretrained models track
+it up to roughly AQI~200 before flattening out at higher pollution levels.
 
 \begin{figure*}[!t]
   \centering
@@ -742,26 +698,26 @@ models follow it until about AQI~200, beyond which every model flattens out.
 \end{figure*}
 
 \subsection{Unseen regions and the metadata shortcut (RQ2)}
-The Metadata MLP sees no pixels, yet on the full test set it comes within 1.2
-points of Fusion R1 (36.8). Pollution is strongly regional and seasonal, and
-three-quarters of the test photos were taken within 25~km of a training photo,
-so ``the usual AQI here in this month'' is already a good answer. That answer
-fails in a new region. Beyond 25~km the Metadata MLP falls to 48.6 with
-$R^2=-0.05$, worse than predicting a constant, while Fusion R1 holds 39.3
-($R^2=0.38$) and the image-only MobileNetV3-S holds 39.2. The ablation tells the
-same story from inside one network: zeroing the metadata of the trained Fusion
-R1 costs 8.9 MAE on the full test set but only 4.5 beyond 25~km.
+Despite seeing no pixels, Metadata MLP achieves 36.8 MAE on the full test set,
+just 1.2 points behind Fusion R1. Because pollution varies strongly by region
+and season and three-quarters of test images lie within 25~km of a training
+photo, predicting typical local AQI for that month works well near seen
+stations. Outside 25~km, however, Metadata MLP degrades to 48.6 MAE with
+$R^2=-0.05$, worse than a constant predictor, whereas Fusion R1 holds 39.3
+($R^2=0.38$) and image-only MobileNetV3-S reaches 39.2. Zeroing the metadata
+input inside the trained Fusion R1 shows the same gap, adding 8.9 MAE on the
+full test set compared with 4.5 beyond 25~km.
 
-Fig.~\ref{fig:distance} looks at distance in finer steps. Within 25~km of
-training data the Metadata MLP is as good as Fusion R1. Beyond 100~km it falls
-apart (60.7 between 100 and 500~km), while the image-only MobileNetV3-S becomes
-the \emph{best} model (30.4 at 100--500~km, 27.3 beyond 500~km, against 37.8 and
-44.2 for Fusion R1). The far bins are small (166 and 53 photos), but the
-direction is clear: far from any training station the location prior misleads
-the fusion model, and the photo alone is more reliable. The same pattern appears
-by region (Fig.~\ref{fig:distance}b): the image-only model is strongest in Africa
-and North America, where training stations are sparse, while location helps in
-densely sampled Europe and Asia.
+Breaking error down by distance to the nearest training photo
+(Fig.~\ref{fig:distance}a) makes this transition clearer. Within 25~km, Metadata
+MLP matches Fusion R1. Beyond 100~km its error jumps to 60.7 (100--500~km), and
+the image-only MobileNetV3-S overtakes Fusion R1 with 30.4 MAE at 100--500~km
+and 27.3 beyond 500~km, compared with 37.8 and 44.2 for Fusion R1. Although
+those distant bins contain only 166 and 53 photos, they indicate that far from
+training stations the learned location prior pulls Fusion R1 off target.
+Regional breakdowns (Fig.~\ref{fig:distance}b) reflect the same distribution:
+MobileNetV3-S leads in Africa and North America where training coverage is
+sparse, while metadata helps in densely covered Europe and Asia.
 
 \begin{figure*}[!t]
   \centering
@@ -772,17 +728,16 @@ densely sampled Europe and Asia.
   \label{fig:distance}
 \end{figure*}
 
-Fusion R1 can exploit this without a second model, because its auxiliary head
-already predicts AQI from the image embedding alone. Over three seeds the
-auxiliary head scores 42.2 on the full test set, the same as a separately
-trained MobileNetV3-S, and 32.4 beyond 100~km, where the main head scores 40.0
-(Fig.~\ref{fig:heads}). Simply zeroing the metadata of the main head is not a
-substitute: it gives 44.6 to 55.0 depending on the seed, because the main head
-never saw a zero embedding during training. A distance-aware switch, which uses
-the main head near known stations and the image-only head beyond about 100~km,
-is therefore a free improvement for a deployed app. We found the 100~km boundary
-by looking at the test set, so it must be confirmed on held-out data before it
-is used.
+Because Fusion R1 already carries an image-only auxiliary head, an app can handle
+distant regions without shipping a second model. Across three training seeds,
+the auxiliary head averages 42.2 MAE on the full test set (matching standalone
+MobileNetV3-S) and 32.4 beyond 100~km, where the main head averages 40.0
+(Fig.~\ref{fig:heads}). Zeroing the metadata vector into the main head performs
+far worse (44.6 to 55.0 across seeds) because the main head never encountered a
+zero metadata embedding during training. Switching from the main head to the
+auxiliary head beyond roughly 100~km therefore offers a zero-cost way to avoid
+stale regional priors, though the 100~km threshold was observed on the test set
+and needs verification on held-out validation data before deployment.
 
 \begin{figure*}[!t]
   \centering
@@ -815,12 +770,11 @@ is used.
   \end{tabular}
 \end{table}
 
-Table~\ref{tab:paired} tests these differences properly. No model is
-significantly more accurate than Fusion R1 on either test set. Fusion R1 is
-significantly better than the Metadata MLP in unseen regions and significantly
-better than MobileNetV3-S on the full test set; in each of the other two cells
-the difference is not significant. It is the only model that is at or near the
-top on both test sets. Fig.~\ref{fig:paired} shows the same test for every model.
+In paired station-bootstrap tests (Table~\ref{tab:paired} and
+Fig.~\ref{fig:paired}), no model significantly outperforms Fusion R1 on either
+evaluation split. Fusion R1 significantly beats Metadata MLP beyond 25~km and
+significantly beats MobileNetV3-S on the full test set, with the other two
+paired comparisons statistically indistinguishable.
 
 \begin{figure*}[!t]
   \centering
@@ -832,16 +786,17 @@ top on both test sets. Fig.~\ref{fig:paired} shows the same test for every model
 \end{figure*}
 
 \subsection{Run-to-run variation}
-A single training run is one random draw. The same Metadata MLP recipe scored
-40.3 in an earlier recorded run and between 35.8 and 37.4 in five runs here, so
-we retrained the three leading models with extra seeds (Fig.~\ref{fig:seeds}).
-Fusion R1 is remarkably stable: $35.4\pm0.3$ on the full test set and
-$39.2\pm0.2$ beyond 25~km over three seeds. MobileNetV3-S gives
-$42.3\pm0.5$ and $41.4\pm2.0$, so its tie with Fusion R1 in unseen regions in
-Table~\ref{tab:main} came from a favourable seed. The Metadata MLP gives
-$36.6\pm0.6$ and $47.2\pm1.0$ over five seeds. Seed-averaged predictions lead to
-the same conclusions as single runs (Table~\ref{tab:paired}). A practical lesson
-is that single-run gaps below about 2 MAE should not be trusted on this dataset.
+Because Metadata MLP scored 40.3 in an earlier recorded run yet ranged from 35.8
+to 37.4 across five reruns here, we retrained the top three models across
+multiple seeds (Fig.~\ref{fig:seeds}). Fusion R1 varies very little:
+$35.4\pm0.3$ on the full test set and $39.2\pm0.2$ beyond 25~km across three
+seeds. MobileNetV3-S shows wider variance ($42.3\pm0.5$ full, $41.4\pm2.0$
+beyond 25~km), meaning its single-run tie with Fusion R1 beyond 25~km in
+Table~\ref{tab:main} reflected a favourable seed. Metadata MLP averages
+$36.6\pm0.6$ full and $47.2\pm1.0$ beyond 25~km across five seeds. Averaging
+predictions across seeds leaves every paired conclusion in
+Table~\ref{tab:paired} unchanged, while showing that single-run MAE gaps smaller
+than roughly 2 points should be treated as noise on this benchmark.
 
 \begin{figure*}[!t]
   \centering
@@ -851,18 +806,17 @@ is that single-run gaps below about 2 MAE should not be trusted on this dataset.
   \label{fig:seeds}
 \end{figure*}
 
-\subsection{Where every model fails}
-Fig.~\ref{fig:perbin} breaks the error down by true category. All models
-over-predict clean air and under-predict polluted air; they regress towards the
-middle of the scale. The effect is worst in the Hazardous category, where the
-mean bias ranges from $-114$ (Metadata MLP) and $-126$ (Fusion R1) to $-241$
-(Ridge on haze statistics). Only 355 training photos are that polluted,
-and very high AQI often coincides with smoke or dust episodes whose look varies
-widely. For a user this means the offline model is reliable as a coarse
-indicator (clean, moderate, unhealthy), and that it will understate extreme
-episodes. The six-class confusion matrices (Fig.~\ref{fig:confusion}) confirm
-this: errors fall mostly in neighbouring categories, which is why $\pm$1 accuracy (90\%) is much higher than
-exact accuracy (46\%).
+\subsection{Error distribution across AQI categories}
+Per-category errors in Fig.~\ref{fig:perbin} show strong regression towards the
+mean across every model, with clean air over-predicted and polluted air
+under-predicted. Bias is largest in the Hazardous bin, where mean signed error
+spans from $-114$ (Metadata MLP) and $-126$ (Fusion R1) down to $-241$ (Ridge
+on 18 haze statistics). Only 355 training photos fall in this bin, and severe
+smoke or dust episodes vary dramatically in appearance. In the six-class
+confusion matrices (Fig.~\ref{fig:confusion}), most misclassifications land in
+an adjacent bin, explaining why $\pm$1 accuracy reaches 90\% even when exact
+six-class accuracy is 46\%. For end users, the offline predictions work best as
+coarse bands while understating extreme pollution events.
 
 \begin{figure*}[!t]
   \centering
@@ -882,10 +836,18 @@ exact accuracy (46\%).
   \label{fig:confusion}
 \end{figure*}
 
-\subsection{Frontier models versus our offline models (RQ3)}
-Table~\ref{tab:frontier} and Fig.~\ref{fig:frontiermae} compare the four
-frontier configurations with all our models on the same 200 test photos. Three
-findings emerge.
+\subsection{Frontier models versus offline models (RQ3)}
+Table~\ref{tab:frontier} and Fig.~\ref{fig:frontiermae} compare all four
+frontier agent configurations against our offline models on the shared 200-photo
+sample. When supplied with photo, GPS, and month, Claude Opus 5.5 reaches 28.9
+MAE and Gemini 4 Argon reaches 29.7, compared with 31.9 for Fusion R1 on the
+same subset. Neither gap reaches statistical significance ($-3.1$, CI [$-8.4$,
+2.0] for Claude; $-2.2$, CI [$-7.9$, 3.3] for Gemini), though both agents post
+the highest Spearman rank correlation (0.86) and exact bin accuracy (55\% and
+53\%). Using the image alone, Claude (32.6) essentially matches Fusion R1 and
+outperforms MobileNetV3-S (37.1), with the latter gap narrowly crossing zero
+($-4.5$, CI [$-11.2$, 0.8]), while photo-only Gemini (40.1) trails Fusion R1
+significantly.
 
 \begin{table*}[!t]
   \centering
@@ -924,41 +886,30 @@ findings emerge.
   \label{fig:frontiermae}
 \end{figure}
 
-\emph{First, given the same inputs, the frontier models are at least as
-accurate as our best model.} With photo, GPS and month, Claude reaches an MAE of
-28.9 and Gemini 29.7, against 31.9 for Fusion R1 on these photos. Neither
-difference is significant ($-3.1$, CI [$-8.4$, 2.0], and $-2.2$, CI [$-7.9$,
-3.3]), but both agents also have the highest rank correlation (0.86) and exact
-category accuracy (55\% and 53\%) of all predictors. With the photo alone,
-Claude (32.6) is level with Fusion R1 and better than our image-only
-MobileNetV3-S (37.1), although that last difference narrowly misses
-significance ($-4.5$, CI [$-11.2$, 0.8]). Gemini with the photo alone (40.1) is
-significantly worse than Fusion R1.
+Location metadata benefits the frontier agents just as strongly as it benefits
+Fusion R1, cutting Claude's MAE by 3.7 (CI [0.3, 7.1]) and Gemini's by 10.3
+(CI [6.3, 14.0]). Their short written explanations reveal a similar mechanism:
+even without coordinates, Claude frequently infers the country or region from
+architecture, signage, and vegetation (e.g., ``Japanese urban street, typically
+low PM2.5'', ``a winter afternoon in southern Taiwan'', ``Looks like smog in a
+North Indian city in winter''). When given coordinates, both agents cite regional
+climatology explicitly, such as ``near Anand Vihar in East Delhi, where January
+PM2.5 is typically very high''. Effectively, both agents combine visual haze
+cues with a geographic prior drawn from pretraining world knowledge instead of
+8,176 labelled photos. On the 39 unseen-region images in this sample, the
+metadata-enabled agents score 30.5 and 33.3 versus 39.7 for Fusion R1, though
+the small sample yields wide intervals ($-9.3$, CI [$-30.7$, 6.4] for Claude)
+that prevent any firm conclusion.
 
-\emph{Second, location helps the frontier models as much as it helps ours.}
-Adding GPS and month lowers Claude's MAE by 3.7 (CI [0.3, 7.1]) and Gemini's by
-10.3 (CI [6.3, 14.0]). Their written reasons show why. Even with the photo
-alone, Claude often places the scene (``Japanese urban street, typically low
-PM2.5''; ``a winter afternoon in southern Taiwan''; ``Looks like smog in a North
-Indian city in winter''), so its photo-only answers already carry a location
-prior read from architecture, signs and vegetation. With coordinates, both
-agents recall local pollution climatology, for example ``near Anand Vihar in
-East Delhi, where January PM2.5 is typically very high''. In other words, the
-frontier models do what Fusion R1 does, combining a regional prior with haze
-cues, but their prior comes from world knowledge instead of 8,176 training
-photos. On the 39 unseen-region photos the frontier agents with metadata look
-better still (30.5 and 33.3 against 39.7), but with so few photos the
-intervals are very wide ($-9.3$, CI [$-30.7$, 6.4] for Claude) and we draw no
-conclusion.
-
-\emph{Third, they share a systematic bias.} All four frontier configurations
-under-predict, by 15 to 33 AQI points on average, and they understate polluted
-air more than our models do (Fig.~\ref{fig:frontierextra}a). Claude and Gemini
-agree with each other more closely ($\rho=0.93$) than either agrees with the
-truth (0.80 and 0.79), which suggests they apply the same visual heuristics.
-Their self-reported confidence is informative, since photos answered with
-higher confidence have lower errors, but Gemini reports systematically higher
-confidence than Claude for similar errors (Fig.~\ref{fig:frontierextra}b).
+Across all four frontier settings, predictions exhibit a consistent negative
+bias of 15 to 33 AQI points on average, understating high-pollution photos more
+severely than our trained networks (Fig.~\ref{fig:frontierextra}a,
+Fig.~\ref{fig:frontierscatter}, Fig.~\ref{fig:frontiersamples}). Claude and
+Gemini correlate more tightly with each other ($\rho=0.93$) than either does
+with ground truth (0.80 and 0.79), pointing to shared visual heuristics. Higher
+self-reported confidence does correspond to lower MAE, although Gemini assigns
+consistently higher confidence values than Claude at comparable error levels
+(Fig.~\ref{fig:frontierextra}b).
 
 \begin{figure*}[!t]
   \centering
@@ -987,22 +938,20 @@ confidence than Claude for similar errors (Fig.~\ref{fig:frontierextra}b).
   \label{fig:frontiersamples}
 \end{figure*}
 
-This accuracy comes at a cost. The median response time was 6.7\,s for Claude
-and 16.2\,s for Gemini, and every query requires network connectivity,
-transmits the user's image and location to a third party, and is billed per
-request. Fusion R1 produces an estimate in 12\,ms on a single laptop CPU core.
-Accuracy is therefore \emph{not} the argument for offline inference, since
-frontier models already match our best model. The argument rests on privacy,
-availability without connectivity, latency and cost, and
-Section~\ref{sec:deploy} shows that our best model provides these on the
-devices in common use.
+In operational terms, the gap between cloud and local execution is large:
+median latency was 6.7\,s for Claude and 16.2\,s for Gemini, requiring an
+active connection, uploading the image and GPS coordinates to external servers,
+and paying per request, whereas Fusion R1 runs in 12\,ms on a single laptop CPU
+core. Since frontier agents already match our offline accuracy, the practical
+value of local inference lies in privacy, offline availability, low latency,
+and zero marginal cost.
 
 \subsection{On-device footprint}
-Table~\ref{tab:footprint} and Fig.~\ref{fig:footprint} report what each model
-costs per photo, measured in notebook~5 on a single CPU core of an Apple M4 Pro
-with PyTorch at batch size~1. Activation memory is the sum of all layer outputs
-in one forward pass, an upper bound because a mobile runtime frees most of them
-on the way.
+Table~\ref{tab:footprint} and Fig.~\ref{fig:footprint} report single-photo
+compute and memory costs measured in notebook~5 on one CPU thread of an Apple
+M4 Pro using PyTorch at batch size~1. Activation memory sums every intermediate
+layer output across a forward pass, providing an upper bound since mobile
+inference runtimes reuse buffers aggressively.
 
 \begin{table*}[!t]
   \centering
@@ -1026,15 +975,15 @@ on the way.
   \end{tabular}
 \end{table*}
 
-Three points matter for a phone. First, the parameter count is a poor guide
-to cost. HazeCNN has the fewest weights of the image models, but it convolves at
-full resolution and needs 17 times the FLOPs of MobileNetV3-S; ResSE needs 54
-times. Second, Fusion R1 adds only 42\% FLOPs and about 2\,ms to MobileNetV3-S
-for a 6-point gain in accuracy. PFRML has the same FLOPs as Fusion R1 but runs
-four times slower, because its physics gate and attention pooling consist of
-many small operations. Third, storing the weights in fp16 halves the download
-to 3.85\,MB and changes the test MAE of every model by at most 0.11, so there is
-no reason to ship fp32.
+Parameter count alone misrepresents runtime cost here. Although HazeCNN has the
+fewest weights among the vision networks, convolving at full input resolution
+pushes its FLOPs to 17 times MobileNetV3-S, and ResSE requires 54 times as many.
+Fusion R1 adds only 42\% more FLOPs and roughly 2\,ms of latency over
+MobileNetV3-S while gaining 6.1 MAE points. PFRML matches Fusion R1's FLOP count
+yet runs four times slower because its physics gate and attention pooling
+dispatch many small operations. Quantising weights from fp32 to fp16 cuts
+Fusion R1's file size in half to 3.85\,MB while shifting test MAE by at most
+0.11 points across all models ($+0.03$ for Fusion R1).
 
 \begin{figure*}[!t]
   \centering
@@ -1046,16 +995,16 @@ no reason to ship fp32.
   \label{fig:footprint}
 \end{figure*}
 
-\subsection{Where in the photo the models look}
-To check that the networks use haze rather than incidental scene content, we
-greyed out each cell of a $7\times7$ grid in 300 test photos and measured how
-much the predicted AQI changed (Fig.~\ref{fig:occlusion}). Both Fusion R1 and
-MobileNetV3-S draw about half of their sensitivity (49\% for Fusion R1) from
-the three middle rows, where the horizon and distant buildings are, and the
-least from the top row of open sky (9.5\%). That is what Eq.~\eqref{eq:scatter}
-predicts: haze shows in how distant objects fade, not in the colour of the sky
-alone. A grey sky by itself, as in the overcast photo of Fig.~\ref{fig:filters},
-is weak evidence.
+\subsection{Spatial sensitivity via occlusion}
+To verify which image regions drive predictions, we greyed out each cell of a
+$7\times7$ grid across 300 test photos and recorded the resulting shift in
+predicted AQI (Fig.~\ref{fig:occlusion}). Both Fusion R1 and MobileNetV3-S draw
+roughly half of their sensitivity (49\% for Fusion R1) from the three middle
+rows covering the horizon and distant structures, and only 9.5\% from the top
+row of open sky. That spatial weighting aligns with Eq.~\eqref{eq:scatter}, as
+atmospheric attenuation appears primarily through fading contrast on distant
+objects, whereas open overcast sky (Fig.~\ref{fig:filters}) is ambiguous on its
+own.
 
 \begin{figure*}[!t]
   \centering
@@ -1068,12 +1017,13 @@ is weak evidence.
 \end{figure*}
 
 % =====================================================================
-\section{Which Model for 80\% of Users?}\label{sec:deploy}
+\section{Deployment Feasibility and Model Selection}\label{sec:deploy}
 % =====================================================================
 
-Section~\ref{sec:mobile} set the target: a CPU-only octa-core phone with at
-least 3\,GB of RAM and Android~11 or a recent iOS, which we estimate covers about
-80\% of camera-phone users. Fig.~\ref{fig:devices} sets our models against it.
+We evaluate our candidate models against the target device from
+Section~\ref{sec:mobile}, a CPU-only octa-core smartphone with at least 3\,GB of
+RAM running Android~11 or recent iOS, estimated to cover roughly 80\% of
+camera-phone users (Fig.~\ref{fig:devices}).
 
 \begin{figure*}[!t]
   \centering
@@ -1088,129 +1038,115 @@ least 3\,GB of RAM and Android~11 or a recent iOS, which we estimate covers abou
   \label{fig:devices}
 \end{figure*}
 
-\textbf{Memory.} Fusion R1 needs at most 28\,MB: 3.85\,MB of fp16 weights and an
-upper bound of 24.4\,MB of activations. That is below even the 128\,MB minimum
-Java heap Android guarantees every app, and about 1.4\% of the 2\,GB limit
-Android~17 sets on a 4\,GB phone. Memory is therefore not a constraint for any
-of our models, including the largest (ResSE, 70\,MB).
+Memory does not constrain any model in our benchmark. Fusion R1 requires at most
+28\,MB total (3.85\,MB for fp16 weights plus our 24.4\,MB activation upper
+bound), staying well below Android's 128\,MB minimum guaranteed Java heap and
+representing 1.4\% of Android~17's 2\,GB foreground cap on a 4\,GB phone. Even
+ResSE, the heaviest network in memory, peaks at 70\,MB.
 
-\textbf{Compute.} On low-end phones, compute speed rather than memory is the
-binding constraint. MobileNetV3-Small
-runs in 15.8\,ms on one big core of a 2016 Pixel~1 in fp32
-\cite{howard2019mobilenetv3}. Fusion R1 needs 1.42 times its FLOPs, so on a
-comparable core we expect a few tens of milliseconds; the Cortex-A73 to A76 big
-cores of today's budget phones are roughly as fast as that 2016 core or faster. Even if a
-low-end device were ten times slower than this estimate, the answer would
-still arrive in well under a second. The from-scratch CNNs, by contrast, need
-17--54 times the FLOPs of MobileNetV3-S, which by the same FLOP-proportional
-reasoning means hundreds of milliseconds to nearly a second on such a core. These
-are estimates; we did not measure on a phone.
+Compute latency is tighter on low-end CPUs, though still comfortable for the
+MobileNetV3-based models. MobileNetV3-Small runs in 15.8\,ms in fp32 on a
+single big core of a 2016 Pixel~1 \cite{howard2019mobilenetv3}. Since Fusion R1
+uses 1.42 times those FLOPs and current budget Cortex-A73 to A76 performance
+cores match or exceed that 2016 chip, single-photo inference should finish in a
+few tens of milliseconds, and would remain well under one second even on a
+device ten times slower. Under the same FLOP scaling, the from-scratch CNNs
+(17--54$\times$ more FLOPs than MobileNetV3-S) would take hundreds of
+milliseconds to nearly a second. These numbers remain analytical estimates until
+benchmarked directly on phone hardware.
 
-\textbf{Software.} Fusion R1 uses only standard layer types (convolutions,
-hard-swish, squeeze-and-excitation, layer normalisation, multi-head attention
-and linear layers) that mobile runtimes such as LiteRT and Core ML provide,
-although we have not converted it ourselves. LiteRT's CPU path runs on all
-Android versions from 8.1, which cover 98.6\% of Google Play devices. No
-accelerator is needed, so the model does not depend on an NPU, which LiteRT can
-only use on Android~12 or newer with a 64-bit build and a supported chip
+On the software side, Fusion R1 contains only standard operators (convolutions,
+hard-swish, squeeze-and-excitation, layer normalisation, multi-head attention,
+and linear layers) supported by both LiteRT and Core ML, though we have not yet
+executed the export step. Running on LiteRT's CPU delegate covers Android~8.1
+and newer (98.6\% of Google Play devices) without depending on NPU delegates
+restricted to 64-bit Android~12+ builds with supported accelerators
 \cite{litert2026}.
 
-\textbf{Recommendation.} We recommend deploying Fusion R1 as a 3.85\,MB fp16
-file, converted to LiteRT on Android and Core ML on iOS. It fits the whole 80\% target
-group with a wide margin and is the most accurate offline model. The app should
-use the main head when the user allows location access, and fall back to the
-built-in image-only head, at no extra cost, when location is denied. The
-distance-aware switch of Section~\ref{sec:results} can be added by shipping
-the coordinates of the 2,527 training stations (a few tens of kilobytes) and
-computing the distance on the phone, once the 100~km boundary has been confirmed
-on held-out data. Because of the regression to the middle, the app should show
-the EPA category and its neighbour rather than a precise number, and state that
-extreme smog and smoke episodes are underestimated. A frontier model could be
-offered as an optional online second opinion, but only with the user's explicit
-consent to upload the photo and location, since that gives up the privacy
-the offline design is meant to protect.
+Taken together, Fusion R1 shipped as a 3.85\,MB fp16 package for LiteRT and
+Core ML is the clearest deployment candidate, combining the lowest offline MAE
+with a wide hardware margin across the 80\% target group. When the user grants
+location permission, the app can run the main head; when permission is withheld,
+it can read the built-in image-only auxiliary head at zero extra storage cost.
+Once the 100~km cutoff is verified on held-out validation data, shipping the
+2,527 training station coordinates (a few tens of kilobytes) would also allow
+switching automatically to the auxiliary head far from training coverage. Given
+regression towards the mean, the user interface should display the predicted
+EPA category alongside its adjacent band and note that severe smoke or haze
+episodes are underestimated. An optional cloud query to a frontier model can be
+exposed for users who want a second opinion, provided they explicitly consent to
+uploading their photo and location.
 
 % =====================================================================
 \section{Discussion and Limitations}\label{sec:discussion}
 % =====================================================================
 
-\textbf{What the frontier comparison shows and does not show.} The comparison
-uses 200 photos, one answer per photo and one version of each model, so a
-single run of a different model version could move the numbers by a few points,
-as the run-to-run variation of our own models showed. With 39 unseen-region
-photos it cannot settle whether the frontier models generalise better than ours
-far from training data. We cannot exclude that some PM25Vision photos, which
-come from public sources, were part of the frontier models' training data,
-although the labels are station readings that are not attached to the photos.
-Giving the month instead of the date prevents looking up the exact reading, but
-the models' knowledge of regional pollution is a legitimate prior, the same one
-our metadata branch learns.
+Several caveats bound how strongly these results should be interpreted. Our
+frontier benchmark covers 200 images, a single query per image, and one snapshot
+version of each commercial agent; as our own seed experiments showed, another
+release or draw could shift MAE by a few points. With only 39 unseen-region
+photos in that sample, we cannot tell whether frontier agents truly generalise
+better far from training stations. We also cannot rule out that some public
+PM25Vision photos appeared in the frontier models' pretraining corpora, even
+though station AQI labels are stored separately and providing only the capture
+month blocks exact daily lookup. Their awareness of regional pollution patterns
+acts as the same type of prior learned by our metadata branch.
 
-\textbf{Data limitations.} Each label is the reading of the nearest monitoring
-station, which may be several kilometres away and may not match the photo's
-exact hour, so part of every model's error is label noise. Three-quarters of the
-test photos lie within 25~km of training photos, and Africa, Latin America and
-Oceania together contribute only 8\% of the test set, so the regional estimates
-there are uncertain. The test set has only 126 Hazardous photos and every model
-underestimates them; this is the most important failure for a health
-application.
+Ground-truth noise and geographic imbalance affect every model on PM25Vision.
+Each label is taken from the nearest monitoring station, which may sit several
+kilometres away or differ slightly in timestamp, setting an irreducible error
+floor. Three-quarters of test images lie within 25~km of training stations,
+while Africa, Latin America, and Oceania together make up just 8\% of the test
+set, leaving regional error estimates there noisy. Only 126 test photos fall in
+the Hazardous range, and every model under-predicts them.
 
-\textbf{Camera domain.} PM25Vision contains dashcam and phone photos of many
-kinds, which helps robustness, but we did not test on fresh photos from
-current phones whose HDR and dehaze processing may differ. A field test in which
-volunteers photograph the sky near reference monitors with several phone brands
-is the natural next step.
+Two deployment gaps remain untested on physical devices. Although PM25Vision
+mixes many dashcams and phones, we have not tested freshly captured photos from
+recent smartphones whose HDR and dehaze pipelines may shift haze contrast; a
+field study pairing volunteer phone shots with reference monitors across brands
+is needed. Similarly, all timings were collected on a laptop CPU and scaled to
+phones via FLOP ratios and published Pixel~1 benchmarks. Exporting Fusion R1 to
+LiteRT and Core ML and profiling it directly on budget hardware such as a
+Snapdragon~680 or Helio~G85 will replace those estimates with measurements.
 
-\textbf{On-device validity.} All footprints were measured on a laptop CPU, and
-phone latency was estimated from published figures and FLOP ratios. Converting
-Fusion R1 to LiteRT and Core ML and timing it on a budget phone, for example
-one with a Snapdragon~680 or Helio~G85, would replace the estimate with a
-measurement.
-
-\textbf{Responsible use.} A wrong ``Good'' during a smoke event could lead
-someone to exercise outdoors. An app must therefore present the estimate as
-indicative, report the category with its uncertainty, and point to official
-readings when a network is available. Keeping inference on the phone also
-means the user's location never leaves the device.
-
-\textbf{Future work.} Beyond on-phone validation, three directions follow from
-our results: learning the distance-aware switch on validation data;
-distilling the frontier models' knowledge into the offline model by using their
-photo + GPS + month answers as soft labels for unlabelled photos; and
-tail-aware training (reweighting or quantile regression) to reduce the
-underestimation of hazardous air.
+From a user-safety standpoint, misclassifying a severe smoke episode as ``Good''
+could encourage unsafe outdoor exertion. Any deployed tool should present
+estimates as indicative, show category uncertainty, and link to official
+monitoring feeds whenever connectivity is available, while keeping default
+inference local so user location stays on the phone. Looking ahead, validation
+tuning of the distance-aware head switch, distilling frontier photo + GPS +
+month outputs as soft labels on unlabelled imagery, and tail-aware training
+through sample reweighting or quantile regression are practical next steps to
+reduce hazardous-air underestimation.
 
 % =====================================================================
 \section{Conclusion}\label{sec:conclusion}
 % =====================================================================
 
-We asked whether a deep network small enough to run offline on an ordinary
-phone can estimate air quality from a single street photo. On the global
-PM25Vision benchmark, an image--metadata fusion network built on MobileNetV3-Small
-provides a qualified affirmative answer. It reaches a test MAE of 35.6 AQI
-points with 90\% of photos within one EPA category, keeps its accuracy in
-regions without training stations where a location-only model collapses, and
-is stable across training seeds (RQ1, RQ2). Handcrafted haze filters explain
-little on their own; ImageNet pretraining and location metadata explain most of
-the gain, and occlusion analysis shows that the networks read the fading of
-distant objects rather than the colour of the sky.
+On the global PM25Vision benchmark, our MobileNetV3-Small image-metadata fusion
+network (Fusion R1) reaches a test MAE of 35.6 AQI points, places 90\% of test
+photos within one EPA category, maintains 39.3 MAE beyond 25~km where a
+location-only baseline drops to 48.6, and varies by less than 0.3 points across
+training seeds (RQ1, RQ2). Handcrafted haze filters explain little variance on
+their own, whereas ImageNet pretraining and geographic/seasonal metadata account
+for most of the accuracy gains. Occlusion tests confirm that the networks focus
+primarily on the horizon and distant structures, with minimal weight on open
+sky.
 
-Frontier models used zero-shot through their command-line agents are at least as
-accurate when they receive the same inputs, and Claude matches our best model
-from the photo alone, because both agents combine haze cues with world
-knowledge about where and when the photo was taken (RQ3). The case for
-offline inference is therefore not accuracy but privacy, availability without a
-network, cost and latency. Fusion R1 delivers those with 2.0\,M parameters, a
-3.85\,MB fp16 file, under 30\,MB of memory and an estimated few tens of
-milliseconds per photo on a budget phone core, well within the hardware we
-estimate 80\% of camera-phone users have (RQ4). The main open problem is the
-systematic underestimation of hazardous air, which every model, offline or
-frontier, shares.
+Zero-shot frontier models run via command-line agents reach similar accuracy on
+identical inputs, and Claude Opus 5.5 matches Fusion R1 using the photo alone
+by pairing visual cues with world knowledge of regional pollution (RQ3).
+Shipping Fusion R1 locally instead offers on-device privacy, offline operation,
+sub-second latency, and zero per-query cost in a 2.0\,M-parameter, 3.85\,MB
+fp16 package requiring under 30\,MB of working memory, well within the CPU-only
+smartphones we estimate 80\% of camera-phone users carry (RQ4). Every tested
+model, local or cloud, still underestimates hazardous air quality, which
+remains the primary barrier to health-critical use.
 
 \section*{Acknowledgment}
 We thank the PM25Vision authors for releasing the dataset. Claude Code
-(Anthropic) and the Antigravity CLI (Google) served as the command-line agents
-in the experiment of Section~\ref{sec:frontier}.
+(Anthropic) and the Antigravity CLI (Google) were used as the command-line
+agents in the experiment of Section~\ref{sec:frontier}.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
@@ -1225,7 +1161,7 @@ in the code archive submitted with this report.
 \textbf{Language and libraries.} Python~3.12 with PyTorch~2.14.1,
 torchvision~0.29.1, scikit-learn~1.9.1, pandas~3.1.0, NumPy~2.5, Pillow~13.0,
 Matplotlib~3.11 and JupyterLab~4.6 (exact versions in
-\texttt{requirements.txt}). The frontier experiment additionally needs the
+\texttt{requirements.txt}). The frontier experiment also requires the
 Claude Code CLI (2.1.330) and the Antigravity CLI (1.5.10), each logged in with
 its own subscription.
 
@@ -1305,7 +1241,7 @@ agy -p "$PROMPT" --model gemini-4-argon-medium --output-format json
   --json-schema "$SCHEMA" --print-timeout 170s
 \end{lstlisting}
 
-\subsection{Key code}
+\subsection{Core model code}
 The differentiable haze-filter layer used by HazeCNN and ResSE
 (notebook~3/4):
 \begin{lstlisting}[language=Python]
