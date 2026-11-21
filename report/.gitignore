@@ -1,0 +1,36 @@
+# Ignore all LaTeX compilation artifacts and output files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.dvi
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.pdf
+*.ps
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.xdv
+
+# Glossaries / nomenclature / minted / build directories
+*.acn
+*.acr
+*.alg
+*.glg
+*.glo
+*.gls
+*.ist
+_minted*/
+build/
+out/
